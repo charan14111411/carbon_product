@@ -1,0 +1,7 @@
+{
+  "version": 3,
+  "sources": ["src/app/features/sales/sale-detail.page.ts"],
+  "sourcesContent": ["\n    .tic{color:var(--stone-500);vertical-align:-2px}\n    .back{display:inline-flex;align-items:center;gap:6px;margin-bottom:14px;color:var(--text-2)}\n    .progress{display:flex;align-items:center;gap:24px;flex-wrap:wrap;margin-bottom:16px}\n    .progress vcx-steps{flex:0 1 520px}\n    .facts{margin-bottom:24px}\n    .side{grid-template-columns:minmax(0,1fr) 340px;align-items:start}\n    .h{font-size:15px}\n    .tchip{display:inline-flex;align-items:center;gap:6px} .tchip i{width:8px;height:8px;border-radius:2px}\n    @media (max-width:1180px){ .side{grid-template-columns:1fr} }\n    @media print{ .facts{display:none} .side{grid-template-columns:1fr} }\n  "],
+  "mappings": ";AACI,CAAA;AAAK,SAAA,IAAA;AAAuB,kBAAA;;AAC5B,CAAA;AAAM,WAAA;AAAoB,eAAA;AAAmB,OAAA;AAAQ,iBAAA;AAAmB,SAAA,IAAA;;AACxE,CAAA;AAAU,WAAA;AAAa,eAAA;AAAmB,OAAA;AAAS,aAAA;AAAe,iBAAA;;AAClE,CADA,SACA;AAAoB,QAAA,EAAA,EAAA;;AACpB,CAAA;AAAO,iBAAA;;AACP,CAAA;AAAM,yBAAA,OAAA,CAAA,EAAA,KAAA;AAA0C,eAAA;;AAChD,CAAA;AAAG,aAAA;;AACH,CAAA;AAAO,WAAA;AAAoB,eAAA;AAAmB,OAAA;;AAAS,CAAvD,MAAuD;AAAS,SAAA;AAAU,UAAA;AAAW,iBAAA;;AACrF,QAAA,WAAA;AAA2B,GAH3B;AAGiC,2BAAA;;;AACjC,OAAA;AAAc,GALd;AAKqB,aAAA;;AAAc,GAJnC;AAIyC,2BAAA;;;",
+  "names": []
+}

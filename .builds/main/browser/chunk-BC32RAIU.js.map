@@ -1,0 +1,12 @@
+{
+  "version": 3,
+  "sources": [
+    "src/app/features/farmer-portal/farmer-portal.routes.ts"
+  ],
+  "sourcesContent": [
+    "import { Routes } from '@angular/router';\r\nimport { Placeholder } from '../shared/placeholder';\r\n\r\nexport default [{ path: '', component: Placeholder, data: { title: 'Farmer portal' } }] satisfies Routes;\r\n"
+  ],
+  "mappings": ";;;;;;AAGA,IAAO,+BAAQ,CAAC,EAAE,MAAM,IAAI,WAAW,aAAa,MAAM,EAAE,OAAO,gBAAgB,EAAE,CAAC;",
+  "names": [],
+  "debugId": "44ce4b3f-5312-5f8e-8ea1-bf6789888c24"
+}

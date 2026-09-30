@@ -1,0 +1,12 @@
+{
+  "version": 3,
+  "sources": [
+    "src/app/core/toast.service.ts"
+  ],
+  "sourcesContent": [
+    "import { Injectable, signal } from '@angular/core';\nimport { ApiError } from './api.service';\n\nexport interface Toast {\n  id: number;\n  kind: 'success' | 'error' | 'info';\n  title: string;\n  body?: string;\n}\n\n@Injectable({ providedIn: 'root' })\nexport class ToastService {\n  readonly toasts = signal<Toast[]>([]);\n  private seq = 0;\n\n  success(title: string, body?: string) { this.push('success', title, body); }\n  info(title: string, body?: string) { this.push('info', title, body); }\n  error(title: string, body?: string) { this.push('error', title, body, 7000); }\n\n  /** Show an API error in plain language. */\n  apiError(err: ApiError | unknown, fallback = \"That didn't work\") {\n    const e = err as ApiError;\n    this.error(fallback, e?.message ?? String(err));\n  }\n\n  dismiss(id: number) {\n    this.toasts.update(ts => ts.filter(t => t.id !== id));\n  }\n\n  private push(kind: Toast['kind'], title: string, body?: string, ms = 4200) {\n    const id = ++this.seq;\n    this.toasts.update(ts => [...ts.slice(-3), { id, kind, title, body }]);\n    setTimeout(() => this.dismiss(id), ms);\n  }\n}\n"
+  ],
+  "mappings": ";;;;;;;;AAWM,IAAO,eAAP,MAAO,cAAY;EACd,SAAS;IAAgB,CAAA;;;;;;EAC1B,MAAM;EAEd,QAAQ,OAAe,MAAa;AAAI,SAAK,KAAK,WAAW,OAAO,IAAI;EAAG;EAC3E,KAAK,OAAe,MAAa;AAAI,SAAK,KAAK,QAAQ,OAAO,IAAI;EAAG;EACrE,MAAM,OAAe,MAAa;AAAI,SAAK,KAAK,SAAS,OAAO,MAAM,GAAI;EAAG;;EAG7E,SAAS,KAAyB,WAAW,oBAAkB;AAC7D,UAAM,IAAI;AACV,SAAK,MAAM,UAAU,GAAG,WAAW,OAAO,GAAG,CAAC;EAChD;EAEA,QAAQ,IAAU;AAChB,SAAK,OAAO,OAAO,QAAM,GAAG,OAAO,OAAK,EAAE,OAAO,EAAE,CAAC;EACtD;EAEQ,KAAK,MAAqB,OAAe,MAAe,KAAK,MAAI;AACvE,UAAM,KAAK,EAAE,KAAK;AAClB,SAAK,OAAO,OAAO,QAAM,CAAC,GAAG,GAAG,MAAM,EAAE,GAAG,EAAE,IAAI,MAAM,OAAO,KAAI,CAAE,CAAC;AACrE,eAAW,MAAM,KAAK,QAAQ,EAAE,GAAG,EAAE;EACvC;;qCAtBW,eAAY;EAAA;4EAAZ,eAAY,SAAZ,cAAY,WAAA,YADC,OAAM,CAAA;;;sEACnB,cAAY,CAAA;UADxB;WAAW,EAAE,YAAY,OAAM,CAAE;;;",
+  "names": [],
+  "debugId": "eba025d6-1f4d-5929-933d-cc3a913b6d8a"
+}

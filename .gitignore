@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+api/var/
+api/.env
+web/node_modules/
+web/dist/
+web/.angular/
+*.sqlite3

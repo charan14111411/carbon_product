@@ -1,0 +1,7 @@
+{
+  "version": 3,
+  "sources": ["src/app/features/calculations/new-run.ts"],
+  "sourcesContent": ["\n    .wrap{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(300px,1fr);gap:20px;align-items:start}\n    @media (max-width: 1100px){.wrap{grid-template-columns:1fr}}\n    .grow{flex:1}\n    ol{margin:8px 0 0;padding-left:18px;display:flex;flex-direction:column;gap:4px;color:var(--stone-700)}\n    .side{--gap:12px}\n  "],
+  "mappings": ";AACI,CAAA;AAAM,WAAA;AAAa,yBAAA,OAAA,CAAA,EAAA,QAAA,OAAA,KAAA,EAAA;AAAyD,OAAA;AAAS,eAAA;;AACrF,QAAA,WAAA;AAA2B,GAD3B;AACiC,2BAAA;;;AACjC,CAAA;AAAM,QAAA;;AACN;AAAG,UAAA,IAAA,EAAA;AAAe,gBAAA;AAAkB,WAAA;AAAa,kBAAA;AAAsB,OAAA;AAAQ,SAAA,IAAA;;AAC/E,CAAA;AAAM,QAAA;;",
+  "names": []
+}

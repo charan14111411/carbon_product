@@ -1,0 +1,12 @@
+{
+  "version": 3,
+  "sources": [
+    "src/app/features/grievances/grievances.routes.ts"
+  ],
+  "sourcesContent": [
+    "import { Routes } from '@angular/router';\r\nimport { Placeholder } from '../shared/placeholder';\r\n\r\nexport default [{ path: '', component: Placeholder, data: { title: 'Grievances' } }] satisfies Routes;\r\n"
+  ],
+  "mappings": ";;;;;;AAGA,IAAO,4BAAQ,CAAC,EAAE,MAAM,IAAI,WAAW,aAAa,MAAM,EAAE,OAAO,aAAa,EAAE,CAAC;",
+  "names": [],
+  "debugId": "7071ce58-f27e-5bdf-9054-f0892ed3ceb9"
+}

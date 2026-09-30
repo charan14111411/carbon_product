@@ -1,0 +1,12 @@
+{
+  "version": 3,
+  "sources": [
+    "src/app/features/catalogue/catalogue.routes.ts"
+  ],
+  "sourcesContent": [
+    "import { Routes } from '@angular/router';\r\nimport { Placeholder } from '../shared/placeholder';\r\n\r\nexport default [{ path: '', component: Placeholder, data: { title: 'Crops & practices catalogue' } }] satisfies Routes;\r\n"
+  ],
+  "mappings": ";;;;;;AAGA,IAAO,2BAAQ,CAAC,EAAE,MAAM,IAAI,WAAW,aAAa,MAAM,EAAE,OAAO,8BAA8B,EAAE,CAAC;",
+  "names": [],
+  "debugId": "ffe0c597-5a4d-5e12-9c19-4d1704067bac"
+}

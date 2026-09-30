@@ -1,0 +1,12 @@
+{
+  "version": 3,
+  "sources": [
+    "src/app/features/satellite/satellite.routes.ts"
+  ],
+  "sourcesContent": [
+    "import { Routes } from '@angular/router';\r\nimport { Placeholder } from '../shared/placeholder';\r\n\r\nexport default [{ path: '', component: Placeholder, data: { title: 'Satellite & practices' } }] satisfies Routes;\r\n"
+  ],
+  "mappings": ";;;;;;AAGA,IAAO,2BAAQ,CAAC,EAAE,MAAM,IAAI,WAAW,aAAa,MAAM,EAAE,OAAO,wBAAwB,EAAE,CAAC;",
+  "names": [],
+  "debugId": "24441935-e74d-5927-bc29-61f0b9b0bd71"
+}

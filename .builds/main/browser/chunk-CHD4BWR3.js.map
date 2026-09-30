@@ -1,0 +1,12 @@
+{
+  "version": 3,
+  "sources": [
+    "src/app/features/models/models.routes.ts"
+  ],
+  "sourcesContent": [
+    "import { Routes } from '@angular/router';\r\nimport { Placeholder } from '../shared/placeholder';\r\n\r\nexport default [{ path: '', component: Placeholder, data: { title: 'Soil-carbon models' } }] satisfies Routes;\r\n"
+  ],
+  "mappings": ";;;;;;AAGA,IAAO,wBAAQ,CAAC,EAAE,MAAM,IAAI,WAAW,aAAa,MAAM,EAAE,OAAO,qBAAqB,EAAE,CAAC;",
+  "names": [],
+  "debugId": "7de18d88-e1e4-59fd-af19-d9fec003a0ac"
+}

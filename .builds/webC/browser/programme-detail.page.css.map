@@ -1,0 +1,7 @@
+{
+  "version": 3,
+  "sources": ["src/app/features/programmes/programme-detail.page.ts"],
+  "sourcesContent": ["\n    .hacts{display:flex;gap:8px;align-items:center;flex-wrap:wrap}\n    .back{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--text-2);margin-bottom:14px}\n    .back:hover{color:var(--forest-700);text-decoration:none}\n    .stats{margin-bottom:16px}\n    .crops{display:flex;flex-wrap:wrap;gap:8px}\n    .crop{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 10px;border-radius:7px;background:var(--forest-50);border:1px solid var(--forest-100);color:var(--forest-800);font-size:13px}\n    .crop code{font-size:11px;color:var(--forest-500)}\n    .note{margin-top:14px}\n    .pname{display:flex;flex-direction:column;gap:1px}\n  "],
+  "mappings": ";AACI,CAAA;AAAO,WAAA;AAAa,OAAA;AAAQ,eAAA;AAAmB,aAAA;;AAC/C,CAAA;AAAM,WAAA;AAAoB,eAAA;AAAmB,OAAA;AAAQ,aAAA;AAAe,SAAA,IAAA;AAAoB,iBAAA;;AACxF,CADA,IACA;AAAY,SAAA,IAAA;AAAwB,mBAAA;;AACpC,CAAA;AAAO,iBAAA;;AACP,CAAA;AAAO,WAAA;AAAa,aAAA;AAAe,OAAA;;AACnC,CAAA;AAAM,WAAA;AAAoB,eAAA;AAAmB,OAAA;AAAQ,UAAA;AAAY,WAAA,EAAA;AAAe,iBAAA;AAAkB,cAAA,IAAA;AAA4B,UAAA,IAAA,MAAA,IAAA;AAAmC,SAAA,IAAA;AAAwB,aAAA;;AACzL,CADA,KACA;AAAW,aAAA;AAAe,SAAA,IAAA;;AAC1B,CAAA;AAAM,cAAA;;AACN,CAAA;AAAO,WAAA;AAAa,kBAAA;AAAsB,OAAA;;",
+  "names": []
+}

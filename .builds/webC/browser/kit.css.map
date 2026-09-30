@@ -1,0 +1,13 @@
+{
+  "version": 3,
+  "sources": ["src/app/ui/kit.ts"],
+  "sourcesContent": ["\n    :host{display:inline-flex;align-items:center;height:18px;padding:0 6px;border-radius:4px;font:600 10px/1 var(--mono);\n      letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}\n    :host(.dc-measured){color:var(--dc-measured);background:var(--dc-measured-bg)}\n    :host(.dc-observed){color:var(--dc-observed);background:var(--dc-observed-bg)}\n    :host(.dc-recorded){color:var(--dc-recorded);background:var(--dc-recorded-bg)}\n    :host(.dc-derived){color:var(--dc-derived);background:var(--dc-derived-bg)}\n    :host(.dc-calculated){color:var(--dc-calculated);background:var(--dc-calculated-bg)}\n    :host(.dc-modelled){color:var(--dc-modelled);background:var(--dc-modelled-bg)}\n  "],
+  "mappings": ";AACI;AAAM,WAAA;AAAoB,eAAA;AAAmB,UAAA;AAAY,WAAA,EAAA;AAAc,iBAAA;AAAkB,QAAA,IAAA,IAAA,CAAA,EAAA,IAAA;AACvF,kBAAA;AAAqB,kBAAA;AAAyB,eAAA;;AAChD,MAAA,CAAA;AAAoB,SAAA,IAAA;AAAyB,cAAA,IAAA;;AAC7C,MAAA,CAAA;AAAoB,SAAA,IAAA;AAAyB,cAAA,IAAA;;AAC7C,MAAA,CAAA;AAAoB,SAAA,IAAA;AAAyB,cAAA,IAAA;;AAC7C,MAAA,CAAA;AAAmB,SAAA,IAAA;AAAwB,cAAA,IAAA;;AAC3C,MAAA,CAAA;AAAsB,SAAA,IAAA;AAA2B,cAAA,IAAA;;AACjD,MAAA,CAAA;AAAoB,SAAA,IAAA;AAAyB,cAAA,IAAA;;",
+  "names": []
+}
+AAA;AAAoB,cAAA,IAAA;AAA8B,gBAAA;AAAqB,SAAA,IAAA;;AAAwB,MAAA,CAAA,aAAA;AAA4B,SAAA,IAAA;;",
+  "names": []
+}
+A;AAAI,aAAA;AAAiB,SAAA,IAAA;;AAAqB,CAAA;AAAG,cAAA;AAAe,aAAA;AAAe,SAAA,IAAA;;",
+  "names": []
+}

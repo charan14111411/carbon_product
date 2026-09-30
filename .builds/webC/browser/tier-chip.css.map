@@ -1,0 +1,7 @@
+{
+  "version": 3,
+  "sources": ["src/app/features/supporting/tier-chip.ts"],
+  "sourcesContent": ["\n    :host{display:inline-flex;align-items:center;gap:8px;min-width:96px}\n    .track{flex:1;height:6px;border-radius:3px;background:var(--sand-200);overflow:hidden;min-width:48px}\n    .fill{display:block;height:100%;border-radius:3px;background:var(--forest-500)}\n    .fill.mid{background:var(--teal-600)} .fill.low{background:var(--amber-600)}\n    .v{font-size:12px;color:var(--stone-700);min-width:30px;text-align:right}\n  "],
+  "mappings": ";AACI;AAAM,WAAA;AAAoB,eAAA;AAAmB,OAAA;AAAQ,aAAA;;AACrD,CAAA;AAAO,QAAA;AAAO,UAAA;AAAW,iBAAA;AAAkB,cAAA,IAAA;AAA2B,YAAA;AAAgB,aAAA;;AACtF,CAAA;AAAM,WAAA;AAAc,UAAA;AAAY,iBAAA;AAAkB,cAAA,IAAA;;AAClD,CADA,IACA,CAAA;AAAU,cAAA,IAAA;;AAA4B,CADtC,IACsC,CAAA;AAAU,cAAA,IAAA;;AAChD,CAAA;AAAG,aAAA;AAAe,SAAA,IAAA;AAAuB,aAAA;AAAe,cAAA;;",
+  "names": []
+}

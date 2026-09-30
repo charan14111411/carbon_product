@@ -1,0 +1,7 @@
+{
+  "version": 3,
+  "sources": ["src/app/features/sales/buyer-form.ts"],
+  "sourcesContent": [".sec{margin-top:6px;padding-top:14px;border-top:1px solid var(--border);font-size:14px}"],
+  "mappings": ";AAAA,CAAA;AAAK,cAAA;AAAe,eAAA;AAAiB,cAAA,IAAA,MAAA,IAAA;AAAmC,aAAA;;",
+  "names": []
+}

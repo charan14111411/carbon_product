@@ -1,0 +1,7 @@
+{
+  "version": 3,
+  "sources": ["src/app/features/farmer-portal/farmer-shell.ts"],
+  "sourcesContent": ["\n    :host{display:block;margin:4px 0 18px}\n    h1{font-size:26px;line-height:1.2;letter-spacing:-.015em;color:var(--forest-900)}\n    .kn{display:block;margin-top:2px;font-size:16px;color:var(--clay-600);font-weight:500}\n    p{margin-top:8px;font-size:15.5px;color:var(--stone-600);line-height:1.5}\n  "],
+  "mappings": ";AACI;AAAM,WAAA;AAAc,UAAA,IAAA,EAAA;;AACpB;AAAG,aAAA;AAAe,eAAA;AAAgB,kBAAA;AAAuB,SAAA,IAAA;;AACzD,CAAA;AAAI,WAAA;AAAc,cAAA;AAAe,aAAA;AAAe,SAAA,IAAA;AAAsB,eAAA;;AACtE;AAAE,cAAA;AAAe,aAAA;AAAiB,SAAA,IAAA;AAAuB,eAAA;;",
+  "names": []
+}

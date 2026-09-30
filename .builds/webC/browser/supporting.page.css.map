@@ -1,0 +1,7 @@
+{
+  "version": 3,
+  "sources": ["src/app/features/supporting/supporting.page.ts"],
+  "sourcesContent": ["\n    .tiers{display:flex;align-items:stretch;gap:0;padding:14px 16px;margin-bottom:24px;overflow-x:auto}\n    .step{flex:1;min-width:170px;padding:4px 8px}\n    .sh{display:flex;align-items:center;gap:10px}\n    .badge-n{display:grid;place-items:center;flex:none;width:26px;height:26px;border-radius:8px;color:#fff;font:600 13px/1 var(--mono)}\n    .st{font-size:10.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text-3)}\n    .sh strong{font-size:13.5px}\n    .step p{margin-top:6px;font-size:12.5px;color:var(--text-2);line-height:1.45}\n    .arrow{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;padding:0 4px;color:var(--stone-400);flex:none}\n    .arrow span{font-size:10.5px;white-space:nowrap}\n  "],
+  "mappings": ";AACI,CAAA;AAAO,WAAA;AAAa,eAAA;AAAoB,OAAA;AAAM,WAAA,KAAA;AAAkB,iBAAA;AAAmB,cAAA;;AACnF,CAAA;AAAM,QAAA;AAAO,aAAA;AAAgB,WAAA,IAAA;;AAC7B,CAAA;AAAI,WAAA;AAAa,eAAA;AAAmB,OAAA;;AACpC,CAAA;AAAS,WAAA;AAAa,eAAA;AAAmB,QAAA;AAAU,SAAA;AAAW,UAAA;AAAY,iBAAA;AAAkB,SAAA;AAAW,QAAA,IAAA,IAAA,CAAA,EAAA,IAAA;;AACvG,CAAA;AAAI,aAAA;AAAiB,eAAA;AAAgB,kBAAA;AAAqB,kBAAA;AAAyB,SAAA,IAAA;;AACnF,CAHA,GAGA;AAAW,aAAA;;AACX,CALA,KAKA;AAAQ,cAAA;AAAe,aAAA;AAAiB,SAAA,IAAA;AAAoB,eAAA;;AAC5D,CAAA;AAAO,WAAA;AAAa,kBAAA;AAAsB,eAAA;AAAmB,mBAAA;AAAuB,OAAA;AAAQ,WAAA,EAAA;AAAc,SAAA,IAAA;AAAuB,QAAA;;AACjI,CADA,MACA;AAAY,aAAA;AAAiB,eAAA;;",
+  "names": []
+}

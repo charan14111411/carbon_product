@@ -1,0 +1,7 @@
+{
+  "version": 3,
+  "sources": ["src/app/features/lab/lab.page.ts"],
+  "sourcesContent": ["\n    .mylab{display:flex;align-items:center;gap:10px;padding:8px 14px;border:1px solid var(--forest-200);background:var(--forest-50);border-radius:var(--radius);color:var(--forest-700)}\n    .mylab span{display:flex;flex-direction:column;line-height:1.25}\n    .mylab strong{font-size:13.5px;color:var(--stone-900)} .mylab em{font-style:normal;font-size:12px;color:var(--text-2)}\n  "],
+  "mappings": ";AACI,CAAA;AAAO,WAAA;AAAa,eAAA;AAAmB,OAAA;AAAS,WAAA,IAAA;AAAiB,UAAA,IAAA,MAAA,IAAA;AAAmC,cAAA,IAAA;AAA4B,iBAAA,IAAA;AAA4B,SAAA,IAAA;;AAC5J,CADA,MACA;AAAY,WAAA;AAAa,kBAAA;AAAsB,eAAA;;AAC/C,CAFA,MAEA;AAAc,aAAA;AAAiB,SAAA,IAAA;;AAAwB,CAFvD,MAEuD;AAAU,cAAA;AAAkB,aAAA;AAAe,SAAA,IAAA;;",
+  "names": []
+}

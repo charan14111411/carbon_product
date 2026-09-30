@@ -1,0 +1,7 @@
+{
+  "version": 3,
+  "sources": ["src/app/features/sampling/zone-modal.ts"],
+  "sourcesContent": ["\n    .fhead{margin-bottom:8px}\n    .search{width:240px;height:32px}\n    .flist{border:1px solid var(--border);border-radius:var(--radius-sm);max-height:260px;overflow:auto;background:var(--surface)}\n    .fr{display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--stone-100);cursor:pointer;font-size:13.5px}\n    .fr:last-child{border-bottom:0}\n    .fr:hover{background:var(--forest-50)}\n    .fr.dis{opacity:.55;cursor:not-allowed}\n    .fr input{accent-color:var(--primary);width:16px;height:16px}\n    .sum{display:flex;align-items:center;gap:10px;margin-top:10px;padding:10px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm)}\n    .sum strong{font-size:16px}\n  "],
+  "mappings": ";AACI,CAAA;AAAO,iBAAA;;AACP,CAAA;AAAQ,SAAA;AAAY,UAAA;;AACpB,CAAA;AAAO,UAAA,IAAA,MAAA,IAAA;AAA+B,iBAAA,IAAA;AAA+B,cAAA;AAAiB,YAAA;AAAc,cAAA,IAAA;;AACpG,CAAA;AAAI,WAAA;AAAa,eAAA;AAAmB,OAAA;AAAS,WAAA,IAAA;AAAiB,iBAAA,IAAA,MAAA,IAAA;AAAyC,UAAA;AAAe,aAAA;;AACtH,CADA,EACA;AAAe,iBAAA;;AACf,CAFA,EAEA;AAAU,cAAA,IAAA;;AACV,CAHA,EAGA,CAAA;AAAQ,WAAA;AAAY,UAAA;;AACpB,CAJA,GAIA;AAAU,gBAAA,IAAA;AAA4B,SAAA;AAAW,UAAA;;AACjD,CAAA;AAAK,WAAA;AAAa,eAAA;AAAmB,OAAA;AAAS,cAAA;AAAgB,WAAA,KAAA;AAAkB,cAAA,IAAA;AAA4B,UAAA,IAAA,MAAA,IAAA;AAA+B,iBAAA,IAAA;;AAC3I,CADA,IACA;AAAY,aAAA;;",
+  "names": []
+}

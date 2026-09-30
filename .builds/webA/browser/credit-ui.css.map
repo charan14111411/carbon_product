@@ -1,0 +1,7 @@
+{
+  "version": 3,
+  "sources": ["src/app/features/credits/credit-ui.ts"],
+  "sourcesContent": ["\n    :host{display:block}\n    .head{display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:8px}\n    .ti{color:var(--stone-500)} .spacer{flex:1}\n    .tot{font-weight:600;color:var(--stone-800)} .u{font-weight:400;color:var(--text-3);font-size:12px}\n    .bar{display:flex;gap:2px;height:10px;border-radius:5px;overflow:hidden;background:var(--sand-200)}\n    .seg{flex-basis:0;min-width:3px} .seg.empty{flex-grow:1;background:var(--sand-200)}\n    .legend{display:flex;flex-wrap:wrap;gap:4px 14px;margin-top:10px;font-size:12px;color:var(--text-2)}\n    .li{display:inline-flex;align-items:center;gap:6px} .li b{font-weight:600;color:var(--stone-800)} .li.zero{opacity:.55}\n    .dot{width:8px;height:8px;border-radius:2px}\n  "],
+  "mappings": ";AACI;AAAM,WAAA;;AACN,CAAA;AAAM,WAAA;AAAa,eAAA;AAAmB,OAAA;AAAQ,aAAA;AAAe,iBAAA;;AAC7D,CAAA;AAAI,SAAA,IAAA;;AAAwB,CAAA;AAAQ,QAAA;;AACpC,CAAA;AAAK,eAAA;AAAgB,SAAA,IAAA;;AAAwB,CAAA;AAAG,eAAA;AAAgB,SAAA,IAAA;AAAoB,aAAA;;AACpF,CAAA;AAAK,WAAA;AAAa,OAAA;AAAQ,UAAA;AAAY,iBAAA;AAAkB,YAAA;AAAgB,cAAA,IAAA;;AACxE,CAAA;AAAK,cAAA;AAAa,aAAA;;AAAe,CAAjC,GAAiC,CAAA;AAAW,aAAA;AAAY,cAAA,IAAA;;AACxD,CAAA;AAAQ,WAAA;AAAa,aAAA;AAAe,OAAA,IAAA;AAAa,cAAA;AAAgB,aAAA;AAAe,SAAA,IAAA;;AAChF,CAAA;AAAI,WAAA;AAAoB,eAAA;AAAmB,OAAA;;AAAS,CAApD,GAAoD;AAAM,eAAA;AAAgB,SAAA,IAAA;;AAAwB,CAAlG,EAAkG,CAAA;AAAS,WAAA;;AAC3G,CAAA;AAAK,SAAA;AAAU,UAAA;AAAW,iBAAA;;",
+  "names": []
+}
