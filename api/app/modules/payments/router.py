@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, File, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -11,7 +11,7 @@ from app.core.db import get_db
 from app.core.errors import NotFound, ValidationFailed
 from app.core.permissions import P
 from app.core.tenancy import get_owned, scoped
-from app.modules.payments import service
+from app.modules.payments import reconciliation, service
 from app.modules.payments.models import BenefitPool, BenefitRule, PaymentProfile, PayoutBatch
 from app.modules.payments.schemas import BenefitRuleIn, BenefitRulePatch, PaymentProfileIn
 
@@ -141,3 +141,30 @@ def retry_payout(payout_id: str, user: CurrentUser = Depends(require(P.PREPARE_P
     return service.payout_batch_out(db, db.get(PayoutBatch, p.batch_id))
 
 
+
+
+# ------------------------------------------------------------------ release & reconciliation
+
+@router.post("/payouts/{payout_id}/release")
+def release_payout(payout_id: str, user: CurrentUser = Depends(_approve), db: Session = Depends(get_db)):
+    p = reconciliation.release_payout(db, user, payout_id)
+    return service.payout_batch_out(db, db.get(PayoutBatch, p.batch_id))
+
+
+@router.get("/payout-batches/{batch_id}/attempts")
+def payment_attempts(batch_id: str, user: CurrentUser = Depends(_read), db: Session = Depends(get_db)):
+    return reconciliation.attempts(db, user, batch_id)
+
+
+@router.post("/payout-batches/{batch_id}/reconcile", status_code=201)
+async def reconcile(batch_id: str, file: UploadFile = File(...),
+                    user: CurrentUser = Depends(require(P.PREPARE_PAYOUT, P.APPROVE_PAYOUT)),
+                    db: Session = Depends(get_db)):
+    data = await file.read()
+    run = reconciliation.reconcile(db, user, batch_id, data, file.filename or "statement.csv")
+    return reconciliation.run_out(db, run)
+
+
+@router.get("/payout-batches/{batch_id}/reconciliation")
+def reconciliation_report(batch_id: str, user: CurrentUser = Depends(_read), db: Session = Depends(get_db)):
+    return reconciliation.report(db, user, batch_id)

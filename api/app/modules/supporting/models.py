@@ -67,3 +67,47 @@ class SyncRun(LedgerModel):
     window_start: Mapped[date] = mapped_column(Date)
     window_end: Mapped[date] = mapped_column(Date)
     summary: Mapped[dict] = mapped_column(JSON, default=dict)  # parameter -> {tier, provider, count}
+
+
+class TerrainSummary(LedgerModel):
+    """DEM-derived terrain for a field (DERIVED): slope / aspect / elevation and the slope-class histogram
+    (VM0042 v2.2 Appendix 5 Table 10)."""
+
+    __tablename__ = "terrain_summaries"
+    field_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("fields.id"), index=True)
+    provider: Mapped[str] = mapped_column(String(40))
+    source_ref: Mapped[str] = mapped_column(String(120), default="")
+    cell_size_m: Mapped[float] = mapped_column(Float)
+    n_cells: Mapped[int] = mapped_column(Integer)
+    elevation_mean_m: Mapped[float] = mapped_column(Float)
+    slope_mean_pct: Mapped[float] = mapped_column(Float)
+    aspect_deg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    dominant_slope_class: Mapped[str] = mapped_column(String(30))
+    histogram: Mapped[dict] = mapped_column(JSON, default=dict)
+    stats: Mapped[dict] = mapped_column(JSON, default=dict)
+    applied: Mapped[dict] = mapped_column(JSON, default=dict)  # column -> {written, before, after}
+
+
+class SoilPropertySuggestion(LedgerModel):
+    """A soil-map suggestion for a field's texture class / WRB group (MODELLED). Never applied automatically;
+    a person applies it with a separate, audited action."""
+
+    __tablename__ = "soil_property_suggestions"
+    field_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("fields.id"), index=True)
+    provider: Mapped[str] = mapped_column(String(40))
+    source_ref: Mapped[str] = mapped_column(String(120), default="")
+    properties: Mapped[dict] = mapped_column(JSON, default=dict)
+    soil_texture_class: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    wrb_soil_group: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    wrb_probability: Mapped[float | None] = mapped_column(Float, nullable=True)
+    data_class: Mapped[str] = mapped_column(String(12), default="MODELLED")
+
+
+class SoilPropertyApplication(LedgerModel):
+    """Who applied which suggestion to the field record, and what changed."""
+
+    __tablename__ = "soil_property_applications"
+    suggestion_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("soil_property_suggestions.id"), index=True)
+    field_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("fields.id"), index=True)
+    changes: Mapped[dict] = mapped_column(JSON, default=dict)  # column -> {before, after}
+    note: Mapped[str] = mapped_column(Text, default="")

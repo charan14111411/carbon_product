@@ -3,7 +3,9 @@ import { FormsModule } from '@angular/forms';
 import { ApiError, ApiService } from '../../core/api.service';
 import { Icon } from '../../ui/icon';
 import { Callout, Modal } from '../../ui/kit';
-import { PackDetail, PackRule, RuleDefn, formatRuleValue, humanValue } from './methodology-data';
+import {
+  FactorRow, PackDetail, PackRule, RuleDefn, VM0042_DOCUMENT, factorEntries, factorValue, formatRuleValue, hasDefault, humanValue, refParts,
+} from './methodology-data';
 
 /** Enter or change one methodology rule. Type-aware input; the source is always required. */
 @Component({
@@ -11,7 +13,7 @@ import { PackDetail, PackRule, RuleDefn, formatRuleValue, humanValue } from './m
   imports: [FormsModule, Modal, Callout, Icon],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <vc-modal [(open)]="open" [drawer]="true" width="520px" [title]="def()?.label ?? 'Rule'" [subtitle]="def()?.help ?? ''">
+    <vc-modal [(open)]="open" [drawer]="true" [width]="def()?.kind === 'factors' ? '720px' : '540px'" [title]="def()?.label ?? 'Rule'" [subtitle]="def()?.help ?? ''">
       @if (def(); as d) {
         <div class="stack">
           <div class="meta">
@@ -21,6 +23,23 @@ import { PackDetail, PackRule, RuleDefn, formatRuleValue, humanValue } from './m
             @else if (d.required_if) { <span class="req-tag soft">Required when {{ labelOf(d.required_if.key) }} is {{ fmtEq(d.required_if.equals) }}</span> }
             @else { <span class="opt-tag">Optional</span> }
           </div>
+
+          @if (d.vm0042_ref || hasDefault(d)) {
+            <div class="vm">
+              <vc-icon name="book" [size]="15" />
+              <div class="vm-t">
+                @if (d.vm0042_ref) { <span>VM0042 v2.2 <strong>{{ d.vm0042_ref }}</strong></span> }
+                @if (hasDefault(d)) {
+                  <span>The methodology fixes this value: <strong>{{ fmt(d.vm0042_default, d.kind, d.unit) }}</strong></span>
+                } @else {
+                  <span class="subtle">VM0042 doesn't fix a value here — the methodology owner decides and cites the source.</span>
+                }
+              </div>
+              @if (hasDefault(d) && !isDefault()) {
+                <button type="button" class="btn btn-secondary btn-sm" (click)="useDefault()">Use VM0042 value</button>
+              }
+            </div>
+          }
 
           <section class="val">
             <div class="label">Value</div>
@@ -34,12 +53,21 @@ import { PackDetail, PackRule, RuleDefn, formatRuleValue, humanValue } from './m
               @case ('choice') {
                 <div class="choices">
                   @for (c of d.choices; track c) {
-                    <label class="choice" [class.on]="value() === c">
+                    <label class="choice" [class.on]="value() === c" [class.warnc]="isWarn(c)">
                       <input type="radio" name="rule-choice" [checked]="value() === c" (change)="value.set(c)" />
-                      <span class="dot"></span><span>{{ human(c) }}</span><code>{{ c }}</code>
+                      <span class="dot"></span><span>{{ human(c) }}@if (d.vm0042_default === c) { <em class="pref">VM0042 value</em> }@if (isWarn(c)) { <em class="wtag">Accepted with a warning</em> }</span><code>{{ c }}</code>
                     </label>
                   }
                 </div>
+                @if (isWarn(value())) {
+                  <vc-callout tone="warn" icon="alert">
+                    <strong>{{ human(String(value())) }} is allowed, but reported as a conformance warning.</strong>
+                    @if (d.key === 'stock_method') {
+                      VM0042 prefers equivalent soil mass from at least two depth increments (§8.2.1.3(7)). With fixed-depth sampling the engine applies the
+                      Ellert &amp; Bettany single-layer mass correction and flags every run and verification package.
+                    } @else { Every calculation and verification package using it will show the warning ({{ d.vm0042_ref }}). }
+                  </vc-callout>
+                }
               }
               @case ('list') {
                 <div class="chips-in">
@@ -50,17 +78,28 @@ import { PackDetail, PackRule, RuleDefn, formatRuleValue, humanValue } from './m
               }
               @case ('factors') {
                 <div class="fac">
-                  <div class="fac-h"><span>Factor key</span><span>Value (tCO₂e per unit)</span><span></span></div>
+                  <div class="fac-h"><span>Factor key</span><span>Value</span><span>Low</span><span>High</span><span>Unit</span><span></span></div>
                   @for (r of factorRows(); track $index; let i = $index) {
                     <div class="fac-r">
-                      <input class="input mono" [ngModel]="r.key" (ngModelChange)="setFactor(i, { key: $event })" placeholder="e.g. synthetic_n_kg" [attr.aria-label]="'Factor key ' + (i + 1)" />
-                      <input class="input num" type="number" min="0" step="any" [ngModel]="r.value" (ngModelChange)="setFactor(i, { value: $event === '' || $event === null ? null : +$event })" placeholder="0.00598" [attr.aria-label]="'Factor value ' + (i + 1)" />
+                      <input class="input mono" [ngModel]="r.key" (ngModelChange)="setFactor(i, { key: $event })" placeholder="e.g. EF_Ndirect" [attr.aria-label]="'Factor key ' + (i + 1)" />
+                      <input class="input num" type="number" min="0" step="any" [ngModel]="r.value" (ngModelChange)="setFactor(i, { value: numOrNull($event) })" [placeholder]="'' + (r.ex?.value ?? '0.010')" [attr.aria-label]="'Value ' + (i + 1)" />
+                      <input class="input num" type="number" min="0" step="any" [ngModel]="r.low" (ngModelChange)="setFactor(i, { low: numOrNull($event) })" [placeholder]="'' + (r.ex?.low ?? '—')" [attr.aria-label]="'Low end ' + (i + 1)" />
+                      <input class="input num" type="number" min="0" step="any" [ngModel]="r.high" (ngModelChange)="setFactor(i, { high: numOrNull($event) })" [placeholder]="'' + (r.ex?.high ?? '—')" [attr.aria-label]="'High end ' + (i + 1)" />
+                      <input class="input" [ngModel]="r.unit" (ngModelChange)="setFactor(i, { unit: $event })" placeholder="t N2O-N / t N" [attr.aria-label]="'Unit ' + (i + 1)" />
                       <button type="button" class="fx" (click)="removeFactor(i)" aria-label="Remove factor"><vc-icon name="trash" [size]="14" /></button>
                     </div>
                   }
-                  <button type="button" class="btn btn-secondary btn-sm add-f" (click)="addFactor()"><vc-icon name="plus" [size]="14" />Add factor</button>
+                  <div class="fac-a">
+                    <button type="button" class="btn btn-secondary btn-sm" (click)="addFactor()"><vc-icon name="plus" [size]="14" />Add factor</button>
+                    @if (exampleRows().length) {
+                      <button type="button" class="btn btn-ghost btn-sm" (click)="addExamples()"><vc-icon name="clipboard-paste" [size]="14" />Add IPCC 2019 factor keys</button>
+                    }
+                  </div>
                 </div>
-                <span class="hint">Use the factor keys that practice types reference (the catalogue's emission factor keys). Each value must be a positive number.</span>
+                <vc-callout tone="info" icon="info">
+                  Enter the uncertainty range (low and high) wherever the source gives one. VM0042 §8.6.3 is conservative: if project emissions fall,
+                  the engine uses the <strong>low</strong> end for both scenarios; if they rise, the <strong>high</strong> end. Added keys show the IPCC 2019 aggregated default as a grey placeholder only; type each value from the IPCC 2019 Refinement or a better source.
+                </vc-callout>
               }
               @case ('text') {
                 <textarea class="input" rows="4" [ngModel]="value() ?? ''" (ngModelChange)="value.set($event)" placeholder="Quote or summarise the methodology text"></textarea>
@@ -82,7 +121,7 @@ import { PackDetail, PackRule, RuleDefn, formatRuleValue, humanValue } from './m
           <section class="src">
             <div class="label">Source <span class="req">*</span></div>
             <p class="hint">Where in the published methodology this value comes from. Verifiers check it.</p>
-            <div class="field"><label for="r-doc">Document</label><input id="r-doc" class="input" [ngModel]="doc()" (ngModelChange)="doc.set($event)" placeholder="e.g. VM0042 v2.2 Improved Agricultural Land Management" /></div>
+            <div class="field"><label for="r-doc">Document</label><input id="r-doc" class="input" [ngModel]="doc()" (ngModelChange)="doc.set($event)" placeholder="e.g. Verra VM0042 v2.2 (21 Oct 2025)" /></div>
             <div class="form-grid">
               <div class="field"><label for="r-sec">Section</label><input id="r-sec" class="input" [ngModel]="section()" (ngModelChange)="section.set($event)" placeholder="e.g. §8.2.1" /></div>
               <div class="field"><label for="r-page">Page</label><input id="r-page" class="input" [ngModel]="page()" (ngModelChange)="page.set($event)" placeholder="e.g. 47" /></div>
@@ -114,6 +153,9 @@ import { PackDetail, PackRule, RuleDefn, formatRuleValue, humanValue } from './m
     .req-tag{font-size:11.5px;padding:2px 8px;border-radius:999px;background:var(--clay-50);color:var(--clay-700);border:1px solid var(--clay-100)}
     .req-tag.soft{background:var(--amber-100);color:var(--amber-600);border-color:#f1dcae}
     .opt-tag{font-size:11.5px;padding:2px 8px;border-radius:999px;background:var(--stone-100);color:var(--stone-600)}
+    .vm{display:flex;gap:10px;align-items:flex-start;padding:12px 14px;border-radius:var(--radius);background:var(--dc-calculated-bg);border:1px solid #cfd9ee;color:var(--dc-calculated)}
+    .vm vc-icon{margin-top:2px}
+    .vm-t{flex:1;display:flex;flex-direction:column;gap:2px;font-size:13px;color:var(--stone-800)}
     .val,.src{display:flex;flex-direction:column;gap:8px;padding:14px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface-2)}
     .src .field{gap:5px}
     .hint{font-size:12px;color:var(--text-3)}
@@ -125,10 +167,14 @@ import { PackDetail, PackRule, RuleDefn, formatRuleValue, humanValue } from './m
     .choice{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--border-strong);border-radius:var(--radius-sm);background:var(--surface);cursor:pointer}
     .choice input{position:absolute;opacity:0;pointer-events:none}
     .choice.on{border-color:var(--forest-500);box-shadow:0 0 0 1px var(--forest-500) inset;background:var(--forest-50)}
+    .choice.on.warnc{border-color:var(--amber-600);box-shadow:0 0 0 1px var(--amber-600) inset;background:var(--warn-soft)}
     .choice .dot{width:16px;height:16px;border-radius:50%;border:2px solid var(--stone-300);flex:none}
     .choice.on .dot{border-color:var(--forest-600);background:var(--forest-600);box-shadow:inset 0 0 0 3px var(--surface)}
     .choice span:nth-of-type(2){flex:1}
     .choice code{font-size:11px;color:var(--text-3)}
+    .pref,.wtag{font-style:normal;font-size:11px;font-weight:600;margin-left:8px;padding:1px 7px;border-radius:999px}
+    .pref{background:var(--dc-calculated-bg);color:var(--dc-calculated)}
+    .wtag{background:var(--amber-100);color:var(--amber-600)}
     .unit-wrap{position:relative}
     .unit-wrap .input{padding-right:64px}
     .big{height:44px;font-size:18px;font-weight:600}
@@ -139,11 +185,12 @@ import { PackDetail, PackRule, RuleDefn, formatRuleValue, humanValue } from './m
     .ch button{display:grid;place-items:center;border:0;background:none;color:inherit;cursor:pointer;padding:2px;border-radius:3px}
     .bare{flex:1;min-width:160px;border:0;outline:none;font:inherit;background:none;height:26px}
     .fac{display:flex;flex-direction:column;gap:6px}
-    .fac-h,.fac-r{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr) 32px;gap:6px;align-items:center}
+    .fac-h,.fac-r{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,.8fr) minmax(0,.7fr) minmax(0,.7fr) minmax(0,1.1fr) 32px;gap:6px;align-items:center}
     .fac-h{font-size:11.5px;color:var(--text-3);padding:0 2px}
+    .fac-r .input{padding:0 8px}
     .fx{display:grid;place-items:center;width:32px;height:38px;border:0;border-radius:6px;background:none;color:var(--stone-400);cursor:pointer}
     .fx:hover{color:var(--danger);background:var(--danger-soft)}
-    .add-f{align-self:flex-start}
+    .fac-a{display:flex;gap:8px;flex-wrap:wrap}
     .prev{display:flex;gap:6px;align-items:center;color:var(--text-2)}
     .ft{display:flex;gap:8px;align-items:center;width:100%}
     .grow{flex:1}
@@ -169,9 +216,20 @@ export class RuleEditor {
   draft = signal('');
   saving = signal(false);
   error = signal<string | null>(null);
+  String = String;
+  hasDefault = hasDefault;
 
-  factorRows = signal<{ key: string; value: number | null }[]>([]);
+  factorRows = signal<FactorRow[]>([]);
   listValue = computed(() => (Array.isArray(this.value()) ? (this.value() as string[]) : []));
+  exampleRows = computed(() => {
+    const have = new Set(this.factorRows().map(r => r.key.trim()));
+    return factorEntries(this.def()?.example).filter(r => !have.has(r.key))
+      .map(r => ({ key: r.key, value: null, low: null, high: null, unit: r.unit, ex: { value: r.value, low: r.low, high: r.high } }));
+  });
+  isDefault = computed(() => {
+    const d = this.def();
+    return !!d && hasDefault(d) && JSON.stringify(this.value()) === JSON.stringify(d.vm0042_default);
+  });
   valueError = computed(() => {
     const d = this.def();
     const v = this.value();
@@ -189,8 +247,12 @@ export class RuleEditor {
       const keys = rows.map(r => r.key.trim());
       if (rows.some(r => !r.key.trim())) return 'Every factor needs a key.';
       if (new Set(keys).size !== keys.length) return 'Each factor key can appear only once.';
-      const bad = rows.find(r => r.value === null || !(Number(r.value) > 0));
-      if (bad) return `Factor “${bad.key}” must be a positive number.`;
+      for (const r of rows) {
+        if (r.value === null || !(Number(r.value) >= 0)) return `Factor “${r.key}” needs a value of zero or more.`;
+        if (r.low !== null && r.low > r.value) return `Factor “${r.key}”: the low end is above the value.`;
+        if (r.high !== null && r.high < r.value) return `Factor “${r.key}”: the high end is below the value.`;
+        if ((r.low !== null && r.low < 0) || (r.high !== null && r.high < 0)) return `Factor “${r.key}”: range ends can't be negative.`;
+      }
     }
     return null;
   });
@@ -212,20 +274,19 @@ export class RuleEditor {
   }
 
   private reset(r: PackRule | null, d: RuleDefn | null) {
-    {
-      this.error.set(null);
-      this.draft.set('');
-      this.value.set(r ? (Array.isArray(r.value) ? [...(r.value as string[])] : r.value) : null);
-      if (d?.kind === 'factors') {
-        const fv = r && r.value && typeof r.value === 'object' && !Array.isArray(r.value) ? (r.value as Record<string, number>) : null;
-        this.factorRows.set(fv ? Object.entries(fv).map(([key, value]) => ({ key, value })) : [{ key: '', value: null }]);
-        this.syncFactors();
-      }
-      this.doc.set(r?.source_document ?? this.defaultDoc());
-      this.section.set(r?.source_section ?? '');
-      this.page.set(r?.source_page ?? '');
-      this.notes.set(r?.notes ?? '');
+    this.error.set(null);
+    this.draft.set('');
+    this.value.set(r ? (Array.isArray(r.value) ? [...(r.value as string[])] : r.value) : null);
+    if (d?.kind === 'factors') {
+      const rows = r ? factorEntries(r.value) : [];
+      this.factorRows.set(rows.length ? rows : [{ key: '', value: null, low: null, high: null, unit: '' }]);
+      this.syncFactors();
     }
+    this.doc.set(r?.source_document ?? (d?.vm0042_ref ? VM0042_DOCUMENT : this.defaultDoc()));
+    const ref = refParts(d?.vm0042_ref);
+    this.section.set(r?.source_section ?? ref.section);
+    this.page.set(r?.source_page ?? ref.page);
+    this.notes.set(r?.notes ?? '');
   }
 
   human = humanValue;
@@ -235,6 +296,18 @@ export class RuleEditor {
   }
   labelOf(key: string) { return this.allDefs().find(d => d.key === key)?.label ?? key; }
   fmtEq(v: unknown) { return typeof v === 'string' ? humanValue(v) : v === true ? 'Yes' : v === false ? 'No' : String(v); }
+  isWarn(v: unknown) { return typeof v === 'string' && (this.def()?.warning_choices ?? []).includes(v); }
+  numOrNull(v: unknown): number | null { return v === '' || v === null || v === undefined ? null : Number(v); }
+
+  useDefault() {
+    const d = this.def();
+    if (!d || !hasDefault(d)) return;
+    this.value.set(d.vm0042_default);
+    this.doc.set(VM0042_DOCUMENT);
+    const ref = refParts(d.vm0042_ref);
+    this.section.set(ref.section);
+    this.page.set(ref.page);
+  }
 
   addItem(ev?: Event) {
     ev?.preventDefault();
@@ -243,16 +316,20 @@ export class RuleEditor {
     if (!this.listValue().includes(v)) this.value.set([...this.listValue(), v]);
     this.draft.set('');
   }
-  addFactor() { this.factorRows.update(r => [...r, { key: '', value: null }]); this.syncFactors(); }
+  addFactor() { this.factorRows.update(r => [...r, { key: '', value: null, low: null, high: null, unit: '' }]); this.syncFactors(); }
+  addExamples() {
+    this.factorRows.update(r => [...r.filter(x => x.key.trim() || x.value !== null), ...this.exampleRows()]);
+    this.syncFactors();
+  }
   removeFactor(i: number) { this.factorRows.update(r => r.filter((_, k) => k !== i)); this.syncFactors(); }
-  setFactor(i: number, p: Partial<{ key: string; value: number | null }>) {
+  setFactor(i: number, p: Partial<FactorRow>) {
     this.factorRows.update(r => r.map((x, k) => (k === i ? { ...x, ...p } : x)));
     this.syncFactors();
   }
   /** Mirror the rows into the value object sent to the API. */
   private syncFactors() {
     const rows = this.factorRows();
-    this.value.set(rows.length ? Object.fromEntries(rows.map(r => [r.key.trim(), r.value])) : null);
+    this.value.set(rows.length ? factorValue(rows) : null);
   }
   removeItem(c: string) { this.value.set(this.listValue().filter(x => x !== c)); }
 

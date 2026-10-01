@@ -8,6 +8,8 @@ export interface Stratum {
   role: 'project' | 'control';
   control_for_code: string | null;
   criteria: Record<string, unknown>;
+  quantification_unit?: string | null;
+  stratification_factors?: string[];
   field_ids: string[];
   field_codes: (string | null)[] | null;
   area_ha: number;
@@ -44,6 +46,8 @@ export interface Campaign {
   placement_seed: number;
   status: CampaignStatus;
   next_status: CampaignStatus | null;
+  season?: string | null;
+  season_override_reason?: string | null;
   progress?: CampaignProgress;
   plans?: SamplePlan[];
 }
@@ -97,6 +101,13 @@ export interface SampleSummary {
   gps_accuracy_m: number | null;
   distance_from_site_m: number;
   depth_reached_cm: number;
+  intended_latitude?: number | null;
+  intended_longitude?: number | null;
+  actual_latitude?: number | null;
+  actual_longitude?: number | null;
+  depth_limit?: DepthLimit | null;
+  probe_diameter_mm?: number | null;
+  cores_composited?: number | null;
   deviation_reason: string | null;
   device_id: string | null;
   client_ref: string;
@@ -134,6 +145,7 @@ export interface CustodyEvent {
   seal_intact: boolean | null;
   count_matches: boolean | null;
   notes: string;
+  storage?: { condition: StorageCondition } | null;
   corrects_event_id: string | null;
   recorded_by: string | null;
   recorded_at: string;
@@ -154,6 +166,7 @@ export interface SampleDetail extends SampleSummary {
     weather?: ContextBlock;
     sensor?: ContextBlock;
     satellite?: ContextBlock;
+    core_depths_reached_cm?: number[];
   };
   layers: SampleLayer[];
   custody: CustodyEvent[];
@@ -211,8 +224,52 @@ export const STATUS_COLOR: Record<string, string> = {
 export const CUSTODY_LABEL: Record<string, string> = {
   collected: 'Collected in the field', packed: 'Packed and sealed', dispatched: 'Dispatched',
   courier_received: 'Received by courier', lab_received: 'Received at the lab', opened: 'Opened at the lab',
+  prepared: 'Prepared at the lab',
   analysed: 'Analysed', archived: 'Archived', correction: 'Correction',
 };
+
+export type DepthLimit = 'bedrock' | 'hardpan' | 'stones' | 'other';
+export type StorageCondition = 'dried' | 'refrigerated' | 'frozen' | 'ambient';
+
+export const DEPTH_LIMIT_LABEL: Record<DepthLimit, string> = {
+  bedrock: 'Bedrock', hardpan: 'Hardpan', stones: 'Stones', other: 'Other',
+};
+
+export const STORAGE_LABEL: Record<StorageCondition, string> = {
+  dried: 'Air-dried', refrigerated: 'Refrigerated', frozen: 'Frozen', ambient: 'Ambient temperature',
+};
+
+/** Stratification factors the API accepts (sampling/domain.py STRATIFICATION_FACTORS, VM0042 v2.2 §8.2.1.2). */
+export const STRATIFICATION_FACTORS: { key: string; label: string; example: string }[] = [
+  { key: 'climate', label: 'Climate', example: 'Semi-arid, 700–900 mm rain' },
+  { key: 'topography', label: 'Topography', example: 'Upper slope' },
+  { key: 'slope_class', label: 'Slope class', example: '2–5 %' },
+  { key: 'land_use_history', label: 'Land-use history', example: 'Cropland since before 2000' },
+  { key: 'parent_material', label: 'Parent material', example: 'Granite-gneiss' },
+  { key: 'soil_texture', label: 'Soil texture', example: 'Sandy loam' },
+  { key: 'soil_type', label: 'Soil type', example: 'Red laterite (Alfisol)' },
+  { key: 'crop', label: 'Crop', example: 'Rice–pulse rotation' },
+  { key: 'management', label: 'Management', example: 'Conventional tillage, residue burnt' },
+];
+
+/** POST /sample-plans/mdd response (VM0042 v2.2 Eq. 1–2). */
+export interface PowerResult {
+  n: number;
+  df: number;
+  t_alpha: number;
+  t_beta: number;
+  mdd: number;
+  n_formula?: number;
+  iterations?: number;
+  s: number;
+  alpha: number;
+  power: number;
+  solved_for: 'n' | 'mdd';
+  equation: string;
+  notes: string;
+  reference: string;
+  data_class: string;
+}
 
 export const ANALYTE_LABEL: Record<string, string> = {
   soc_pct: 'Soil organic carbon', bulk_density_g_cm3: 'Bulk density', coarse_fraction: 'Coarse fraction',

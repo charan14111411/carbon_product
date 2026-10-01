@@ -1,4 +1,5 @@
 /** Shapes and small lookups shared by the land screens (fields, practices, catalogue). */
+import type { SiteFields } from './site-data';
 
 export interface AttrDef {
   key: string;
@@ -40,7 +41,7 @@ export interface PracticeType {
   updated_at: string;
 }
 
-export interface FieldRec {
+export interface FieldRec extends SiteFields {
   id: string;
   farm_id: string;
   code: string;
@@ -138,9 +139,9 @@ export const SOURCE_LABEL: Record<string, string> = {
   field_app: 'Field app', farmer_app: 'Farmer app', whatsapp: 'WhatsApp', import: 'Import', partner: 'Partner',
 };
 
-export const LAND_USES = ['cropland', 'grassland', 'forest', 'wetland', 'settlement', 'other'] as const;
+export const LAND_USES = ['cropland', 'grassland', 'native_grassland', 'forest', 'wetland', 'settlement', 'other'] as const;
 export const LAND_USE_COLOR: Record<string, string> = {
-  cropland: 'var(--amber-600)', grassland: 'var(--forest-400)', forest: 'var(--forest-700)',
+  cropland: 'var(--amber-600)', grassland: 'var(--forest-400)', native_grassland: 'var(--teal-600)', forest: 'var(--forest-700)',
   wetland: 'var(--sky-600)', settlement: 'var(--stone-500)', other: 'var(--violet-600)',
 };
 

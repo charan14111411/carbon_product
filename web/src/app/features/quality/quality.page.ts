@@ -9,6 +9,8 @@ import { ProjectContext } from '../../core/project-context.service';
 import { ToastService } from '../../core/toast.service';
 import { Icon } from '../../ui/icon';
 import { Badge, Callout, Empty, ErrorBox, Loading, Modal, PageHeader } from '../../ui/kit';
+import { VmRef } from '../lab/vm-ref';
+import { RULES, humanizeCode } from './rules';
 
 type Severity = 'blocking' | 'error' | 'warning' | 'info';
 interface Finding {
@@ -50,11 +52,17 @@ const ENTITY: Record<string, { label: string; route: string; param: string }> = 
   lab_result: { label: 'Lab result', route: '/app/lab', param: 'result' },
   sample_plan: { label: 'Sampling plan', route: '/app/sampling', param: 'plan' },
   sampling_point: { label: 'Sampling point', route: '/app/sampling', param: 'point' },
+  campaign: { label: 'Campaign', route: '/app/sampling', param: 'campaign' },
+  stratum: { label: 'Zone', route: '/app/sampling', param: 'stratum' },
+  lab: { label: 'Lab', route: '/app/lab', param: 'lab' },
+  calculation_run: { label: 'Calculation run', route: '/app/calculations', param: 'run' },
 };
+/** Details already shown elsewhere in the drawer, or not useful as a key/value row. */
+const HIDDEN_DETAILS = new Set(['reference']);
 
 @Component({
   selector: 'vc-quality-page',
-  imports: [FormsModule, RouterLink, PageHeader, Loading, ErrorBox, Empty, Badge, Callout, Modal, Icon, DayPipe, AgoPipe, HumanPipe],
+  imports: [FormsModule, RouterLink, PageHeader, Loading, ErrorBox, Empty, Badge, Callout, Modal, Icon, DayPipe, AgoPipe, HumanPipe, VmRef],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <vc-page-header title="Quality checks" eyebrow="Measurement"
@@ -103,7 +111,7 @@ const ENTITY: Record<string, { label: string; route: string; param: string }> = 
         </select>
         <select class="input" [ngModel]="rule()" (ngModelChange)="rule.set($event)" aria-label="Check">
           <option value="">All checks</option>
-          @for (r of summary()?.rules ?? []; track r.code) { <option [value]="r.code">{{ r.title }}</option> }
+          @for (r of summary()?.rules ?? []; track r.code) { <option [value]="r.code">{{ ruleTitle(r.code) }}</option> }
         </select>
         <select class="input sm" [ngModel]="entity()" (ngModelChange)="entity.set($event)" aria-label="Record type">
           <option value="">All records</option>
@@ -139,7 +147,8 @@ const ENTITY: Record<string, { label: string; route: string; param: string }> = 
                   @for (f of g.items; track f.id) {
                     <tr class="clickable" (click)="openFinding(f)">
                       <td class="sev-col"><span [class]="'bar s-' + f.severity"></span></td>
-                      <td><div class="rt">{{ ruleTitle(f.rule_code) }}</div><code class="rc">{{ f.rule_code }}</code></td>
+                      <td><div class="rt">{{ ruleTitle(f.rule_code) }}</div>
+                        <div class="rmeta"><code class="rc">{{ f.rule_code }}</code>@if (refOf(f); as ref) { <vc-vm-ref [ref]="ref" /> }</div></td>
                       <td class="msg">{{ f.message }}</td>
                       <td class="nowrap">
                         <a [routerLink]="entityRoute(f)" [queryParams]="entityParams(f)" (click)="$event.stopPropagation()" class="ent">
@@ -178,6 +187,10 @@ const ENTITY: Record<string, { label: string; route: string; param: string }> = 
             @if (f.blocks_calculation) { <span class="blk small"><vc-icon name="lock" [size]="12" />Blocks calculation</span> }
           </div>
           <p class="big-msg">{{ f.message }}</p>
+          @if (ruleWhy(f.rule_code); as why) {
+            <div class="why"><div class="why-h"><vc-icon name="info" [size]="14" />Why this check exists</div><p>{{ why }}</p>
+              @if (refOf(f); as ref) { <vc-vm-ref [ref]="ref" /> }</div>
+          } @else if (refOf(f); as ref) { <div><vc-vm-ref [ref]="ref" /></div> }
           <dl class="kv">
             <dt>Record</dt><dd><a [routerLink]="entityRoute(f)" [queryParams]="entityParams(f)">{{ entityLabel(f.entity_type) }} <span class="mono small">{{ f.entity_id.slice(0, 8) }}</span></a></dd>
             <dt>Found</dt><dd>{{ f.created_at | day: true }}</dd>
@@ -252,6 +265,10 @@ const ENTITY: Record<string, { label: string; route: string; param: string }> = 
     .grp td{background:var(--surface-2);padding:8px 14px;border-bottom:1px solid var(--border)}
     .gl{display:inline-flex;gap:6px;align-items:center;font-size:12px;font-weight:600;color:var(--c);margin-right:8px;text-transform:uppercase;letter-spacing:.05em}
     .rt{font-weight:500;white-space:nowrap} .rc{font-size:11px;color:var(--text-3)}
+    .rmeta{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:2px}
+    .why{padding:12px 14px;border-radius:var(--radius-sm);background:var(--surface-2);border:1px solid var(--border)}
+    .why-h{display:flex;gap:6px;align-items:center;font-size:12px;font-weight:600;color:var(--stone-700);text-transform:uppercase;letter-spacing:.04em}
+    .why p{margin:6px 0 8px;color:var(--stone-800);line-height:1.5;font-size:13.5px}
     .msg{max-width:460px;color:var(--stone-800)}
     .ent{font-size:12.5px} .ent .mono{color:var(--text-3)}
     .still{color:var(--red-600);margin-top:3px}
@@ -356,12 +373,19 @@ export class QualityPage {
   }
 
   clear() { this.sev.set(''); this.status.set('active'); this.rule.set(''); this.entity.set(''); this.q.set(''); }
-  ruleTitle(code: string) { return this.summary()?.rules.find(r => r.code === code)?.title ?? code.replace(/_/g, ' ').toLowerCase().replace(/^./, c => c.toUpperCase()); }
+  ruleTitle(code: string) { return RULES[code]?.title ?? this.summary()?.rules.find(r => r.code === code)?.title ?? humanizeCode(code); }
+  ruleWhy(code: string) { return RULES[code]?.why ?? null; }
+  refOf(f: Finding): string | null {
+    const r = f.details?.['reference'];
+    return typeof r === 'string' && r ? r : RULES[f.rule_code]?.ref ?? null;
+  }
   entityLabel(t: string) { return ENTITY[t]?.label ?? t.replace(/_/g, ' '); }
   entityRoute(f: Finding) { return ENTITY[f.entity_type]?.route ?? '/app/sampling'; }
   entityParams(f: Finding) { return { [ENTITY[f.entity_type]?.param ?? 'id']: f.entity_id }; }
   detailRows(f: Finding) {
-    return Object.entries(f.details ?? {}).filter(([, v]) => v !== null && typeof v !== 'object').map(([k, v]) => ({ k, v: String(v) }));
+    return Object.entries(f.details ?? {})
+      .filter(([k, v]) => !HIDDEN_DETAILS.has(k) && v !== null && v !== '' && (typeof v !== 'object' || (Array.isArray(v) && v.length && v.every(x => typeof x !== 'object'))))
+      .map(([k, v]) => ({ k, v: Array.isArray(v) ? v.join(', ') : typeof v === 'boolean' ? (v ? 'Yes' : 'No') : String(v) }));
   }
 
   sevOne(s: Severity) { return ({ blocking: 'Blocking', error: 'Error', warning: 'Warning', info: 'Info' } as const)[s]; }

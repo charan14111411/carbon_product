@@ -106,6 +106,9 @@ class SoilGridsProvider(Protocol):
     def properties(self, lat: float, lon: float) -> dict[str, float]:
         """Static soil properties (MODELLED): clay_pct, sand_pct, silt_pct, ph, soc_g_kg, bdod_g_cm3."""
 
+    def wrb_group(self, lat: float, lon: float) -> tuple[str, float] | None:
+        """Most probable WRB reference soil group and its probability (MODELLED), if offered."""
+
     def source_ref(self, lat: float, lon: float) -> str: ...
 
 
@@ -236,6 +239,9 @@ class SimulatedDeviceProvider:
 # ---------------------------------------------------------------- simulated soil grids
 
 
+WRB_COMMON = ("Luvisols", "Acrisols", "Cambisols", "Ferralsols", "Nitisols", "Lixisols", "Fluvisols")
+
+
 class SimulatedSoilGrids:
     """Static soil properties on a ~250 m grid, in the spirit of ISRIC SoilGrids (MODELLED)."""
 
@@ -258,6 +264,19 @@ class SimulatedSoilGrids:
             "soc_g_kg": round(_clamp(6 + 14 * uniform(region, "soc") + 2 * normal(cell, "soc"), 1, 60), 1),
             "bdod_g_cm3": round(_clamp(1.2 + 0.35 * uniform(region, "bd"), 0.9, 1.7), 2),
         }
+
+    def wrb_group(self, lat: float, lon: float) -> tuple[str, float] | None:
+        """Most probable WRB group, consistent with the simulated texture (Vertisols when very clayey,
+        Arenosols when very sandy, otherwise a regional mix of common tropical/temperate groups)."""
+        p = self.properties(lat, lon)
+        cell = self._cell(lat, lon)
+        if p["clay_pct"] >= 45:
+            return "Vertisols", round(0.55 + 0.3 * uniform(cell, "wrb-p"), 2)
+        if p["sand_pct"] >= 70:
+            return "Arenosols", round(0.5 + 0.3 * uniform(cell, "wrb-p"), 2)
+        region = f"{round(lat, 1)},{round(lon, 1)}"
+        groups = WRB_COMMON
+        return groups[int(uniform(region, "wrb") * len(groups))], round(0.3 + 0.4 * uniform(cell, "wrb-p"), 2)
 
     def source_ref(self, lat: float, lon: float) -> str:
         return f"soilgrids (simulated) cell {self._cell(lat, lon)}"

@@ -1,6 +1,7 @@
-from datetime import date, timedelta
+from datetime import timedelta
 
 from app.modules.risk.models import Grievance
+from app.modules.risk.service import today as app_today  # UTC date, as the app uses
 from tests import _p345_factories as fx
 from tests.conftest import login, make_org, make_user
 
@@ -39,7 +40,7 @@ def test_risk_event_flow_and_validation(client, org, as_role):
     assert wrong.status_code == 422 and wrong.json()["code"] == "FIELD_NOT_IN_PROJECT"
     future = client.post("/api/risk-events", headers=h, json={
         "project_id": str(w["project_id"]), "kind": "flood", "description": "Future flood",
-        "occurred_on": (date.today() + timedelta(days=2)).isoformat()})
+        "occurred_on": (app_today() + timedelta(days=2)).isoformat()})
     assert future.status_code == 422
     assert client.post("/api/risk-events", headers=as_role("mrv_analyst"), json={
         "project_id": str(w["project_id"]), "kind": "flood", "occurred_on": "2025-01-01",
@@ -82,14 +83,14 @@ def test_grievance_lifecycle_and_history(client, org, as_role):
         "description": "My share for last season has not arrived.", "channel": "whatsapp", "priority": "high"})
     assert r.status_code == 201, r.text
     g = r.json()
-    assert g["code"] == "G-00001" and g["due_on"] == (date.today() + timedelta(days=3)).isoformat()
+    assert g["code"] == "G-00001" and g["due_on"] == (app_today() + timedelta(days=3)).isoformat()
     low = client.post("/api/grievances", headers=h, json={"category": "data", "subject": "Wrong area",
                                                            "description": "The map shows the wrong area.",
                                                            "priority": "low"}).json()
-    assert low["code"] == "G-00002" and low["due_on"] == (date.today() + timedelta(days=14)).isoformat()
+    assert low["code"] == "G-00002" and low["due_on"] == (app_today() + timedelta(days=14)).isoformat()
     normal = client.post("/api/grievances", headers=h, json={"category": "other", "subject": "Question",
                                                               "description": "When is the next visit?"}).json()
-    assert normal["due_on"] == (date.today() + timedelta(days=7)).isoformat()
+    assert normal["due_on"] == (app_today() + timedelta(days=7)).isoformat()
 
     handler = make_user(org, "programme_admin")
     a = client.post(f"/api/grievances/{g['id']}/assign", headers=h, json={"user_id": str(fx.uid(handler))})
@@ -121,7 +122,7 @@ def test_grievance_overdue_filter(client, org, as_role):
     client.post("/api/grievances", headers=h, json={"category": "other", "subject": "New issue",
                                                      "description": "Just raised."})
     with fx.session() as s:
-        s.get(Grievance, __import__("uuid").UUID(g["id"])).due_on = date.today() - timedelta(days=1)
+        s.get(Grievance, __import__("uuid").UUID(g["id"])).due_on = app_today() - timedelta(days=1)
         s.commit()
     over = client.get("/api/grievances?overdue=true", headers=h).json()
     assert [x["id"] for x in over] == [g["id"]] and over[0]["overdue"]

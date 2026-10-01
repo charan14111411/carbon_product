@@ -8,7 +8,12 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import LedgerModel, TenantModel
 
-TERMS = ("baseline_scenario", "project_emissions", "baseline_emissions", "leakage")
+# Approved estimates the engine can use (VM0042 v2.2). Keep in sync with engine.ENGINE_TERMS.
+TERMS = (
+    "baseline_scenario", "project_emissions", "baseline_emissions", "leakage",
+    "soc_project_modelled", "ch4_soil", "n2o_soil", "leakage_biomass_residues", "leakage_displacement",
+    "woody_biomass_project", "woody_biomass_baseline",
+)
 
 
 class TermEstimate(TenantModel):
@@ -66,7 +71,7 @@ class Claim(LedgerModel):
 
     __tablename__ = "claims"
     field_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("fields.id"), index=True)
-    pool: Mapped[str] = mapped_column(String(20))  # soc | n2o | ch4 | biomass
+    pool: Mapped[str] = mapped_column(String(20))  # soc | co2 | n2o | ch4 | biomass
     period_start: Mapped[date] = mapped_column(Date)
     period_end: Mapped[date] = mapped_column(Date)
     run_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("calculation_runs.id"), index=True)

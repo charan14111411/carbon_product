@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, datetime
 
-from sqlalchemy import JSON, Date, Float, ForeignKey, Integer, String, Text, UniqueConstraint, Uuid
+from sqlalchemy import JSON, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import LedgerModel, TenantModel
@@ -39,6 +39,15 @@ class Field(TenantModel):
     crop_attributes: Mapped[dict] = mapped_column(JSON, default=dict)
     soil_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
     elevation_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # VM0042 v2.2 Table 7 / Appendix 5 attributes (control-site similarity, stratification, applicability)
+    slope_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    aspect_deg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    soil_texture_class: Mapped[str | None] = mapped_column(String(40), nullable=True)  # FAO/USDA textural class
+    wrb_soil_group: Mapped[str | None] = mapped_column(String(60), nullable=True)  # WRB reference soil group
+    ecoregion: Mapped[str | None] = mapped_column(String(120), nullable=True)  # WWF terrestrial ecoregion
+    climate_zone: Mapped[str | None] = mapped_column(String(60), nullable=True)  # IPCC climate zone
+    mean_annual_precip_mm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    land_cover: Mapped[str] = mapped_column(String(20), default="cropland")  # cropland | grassland | wetland | other
     version: Mapped[int] = mapped_column(Integer, default=1)
     status: Mapped[str] = mapped_column(String(20), default="active")  # active | retired
 
@@ -80,3 +89,21 @@ class Enrolment(TenantModel):
     eligibility: Mapped[dict] = mapped_column(JSON, default=dict)  # {checks: [{code, passed, message}], decided_at}
     enrolled_on: Mapped[date | None] = mapped_column(Date, nullable=True)
     withdrawn_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+
+class LandTenure(TenantModel):
+    """Who controls a field, for which period, backed by documents (VCS Standard project ownership /
+    right of use). A second person verifies it (four-eyes) before it counts for enrolment."""
+
+    __tablename__ = "land_tenures"
+    field_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("fields.id"), index=True)
+    holder_farmer_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("farmers.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(20))  # owned | leased | shared | community | other
+    document_evidence_ids: Mapped[list] = mapped_column(JSON, default=list)
+    valid_from: Mapped[date] = mapped_column(Date)
+    valid_to: Mapped[date | None] = mapped_column(Date, nullable=True)  # None = open-ended
+    notes: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(10), default="pending")  # pending | verified | rejected
+    verified_by: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey("users.id"), nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    review_note: Mapped[str] = mapped_column(Text, default="")

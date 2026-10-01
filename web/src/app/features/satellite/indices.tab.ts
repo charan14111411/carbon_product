@@ -1,5 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, effect, inject, input, model, signal, untracked } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { ActivatedRoute } from '@angular/router';
 import { ApiError, ApiService } from '../../core/api.service';
 import { AuthService } from '../../core/auth.service';
 import { DayPipe, NumPipe } from '../../core/format';
@@ -14,11 +15,20 @@ interface Alert {
 }
 interface Alerts { project_id: string; threshold_pct: number; alerts: Alert[] }
 interface SatPoint { date: string; value: number; cloud_pct: number; source: string; excluded: boolean }
-interface SatSeries { field_id: string; index: string; data_class: string; cloud_limit_pct: number; cloudy_excluded: number; points: SatPoint[] }
+interface SatSeries {
+  field_id: string; index: string; data_class: string; credit_eligible?: boolean; cloud_limit_pct: number; cloudy_excluded: number;
+  points: SatPoint[]; method?: string;
+}
 
 const INDICES = [
-  { key: 'ndvi', label: 'NDVI', long: 'Vegetation (NDVI)', hint: 'Greenness of the canopy. Bare soil ≈ 0.1, dense crop ≈ 0.8.' },
-  { key: 'ndmi', label: 'NDMI', long: 'Moisture (NDMI)', hint: 'Water in leaves and surface. Higher is wetter.' },
+  { key: 'ndvi', label: 'NDVI', long: 'Vegetation (NDVI)', unit: '', color: '#2f7249', fill: 'rgba(47,114,73,0.08)',
+    hint: 'Greenness of the canopy. Bare soil ≈ 0.1, dense crop ≈ 0.8.' },
+  { key: 'ndmi', label: 'NDMI', long: 'Moisture (NDMI)', unit: '', color: '#1f5f99', fill: 'rgba(31,95,153,0.08)',
+    hint: 'Water in leaves and surface. Higher is wetter.' },
+  { key: 'ndwi', label: 'NDWI', long: 'Surface water (NDWI)', unit: '', color: '#0e7280', fill: 'rgba(14,114,128,0.08)',
+    hint: 'Open water and waterlogging (McFeeters). Above 0 usually means standing water, e.g. flooded paddy.' },
+  { key: 'lai', label: 'LAI', long: 'Leaf area (LAI)', unit: 'm²/m²', color: '#9a6200', fill: 'rgba(154,98,0,0.08)',
+    hint: 'Leaf area per ground area, worked out from NDVI. 0 = bare, 3–6 = full canopy.' },
 ];
 
 @Component({
@@ -86,16 +96,19 @@ const INDICES = [
             <div class="meta">
               <div><span class="k">Clear passes</span><strong class="num">{{ clearCount() }}</strong></div>
               <div><span class="k">Cloudy, excluded</span><strong class="num">{{ series.data()!.cloudy_excluded }}</strong></div>
-              <div><span class="k">Latest · {{ latest()?.date | day }}</span><strong class="num">{{ latest()?.value | num: 3 }}</strong></div>
+              <div><span class="k">Latest · {{ latest()?.date | day }}</span><strong class="num">{{ latest()?.value | num: 3 }}@if (indexMeta().unit) {<small class="u">{{ indexMeta().unit }}</small>}</strong></div>
               <div class="spacer"></div>
-              <vc-dc cls="OBSERVED" />
+              <vc-dc [cls]="series.data()!.data_class || 'OBSERVED'" />
             </div>
             <vc-chart [option]="chart()" height="300px" />
             <div class="legend">
-              <span class="li"><i class="ln"></i>Clear pass (cloud ≤ {{ series.data()!.cloud_limit_pct | num: 0 }}%)</span>
+              <span class="li"><i class="ln" [style.background]="indexMeta().color"></i>Clear pass (cloud ≤ {{ series.data()!.cloud_limit_pct | num: 0 }}%)</span>
               <span class="li"><i class="cl"></i>Cloudy pass — not used in any check</span>
               <span class="small subtle">{{ indexMeta().hint }}</span>
             </div>
+            @if (series.data()!.method; as method) {
+              <p class="method small muted"><vc-dc cls="DERIVED" /><span>{{ method }}</span></p>
+            }
           </div>
           <div class="card-foot left">
             <span class="small muted">Source</span>
@@ -127,9 +140,11 @@ const INDICES = [
     .meta{display:flex;gap:28px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
     .meta > div:not(.spacer){display:flex;flex-direction:column;gap:2px}
     .meta .k{font-size:12px;color:var(--text-2)} .meta strong{font-size:18px;font-weight:600}
+    .meta strong .u{font-size:11.5px;font-weight:500;color:var(--text-3);margin-left:4px}
+    .method{display:flex;gap:8px;align-items:flex-start;margin-top:10px;padding-top:10px;border-top:1px solid var(--stone-100)}
     .legend{display:flex;flex-wrap:wrap;gap:18px;margin-top:8px;font-size:12.5px;color:var(--stone-700);align-items:center}
     .li{display:inline-flex;align-items:center;gap:6px}
-    .li i.ln{width:14px;height:3px;border-radius:2px;background:#2f7249}
+    .li i.ln{width:14px;height:3px;border-radius:2px}
     .li i.cl{width:9px;height:9px;border-radius:50%;background:#dfe3df;border:1px solid #9aa29c}
     .card-foot.left{justify-content:flex-start;gap:10px}
     .sim{font:600 10px/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;padding:4px 6px;border-radius:4px;background:var(--violet-100);color:var(--violet-600)}
@@ -142,7 +157,9 @@ export class IndicesTab {
   projectId = input.required<string>();
   fields = input<FieldLite[]>([]);
   fieldId = model<string>('');
-  index = signal('ndvi');
+  private route = inject(ActivatedRoute);
+  /** ?index=ndwi|lai|… opens a specific index (handy for links from other screens). */
+  index = signal(INDICES.some(i => i.key === this.route.snapshot.queryParamMap.get('index')) ? this.route.snapshot.queryParamMap.get('index')! : 'ndvi');
   indices = INDICES;
   refreshing = signal(false);
   canRefresh = computed(() => this.auth.can('data.sync'));
@@ -158,7 +175,9 @@ export class IndicesTab {
 
   chart = computed(() => {
     const pts = this.series.data()?.points ?? [];
-    const name = this.indexMeta().label;
+    const meta = this.indexMeta();
+    const name = meta.label;
+    const unit = meta.unit ? ` <span style="font-size:11px;color:#737c76">${meta.unit}</span>` : '';
     const byDate = new Map(pts.map(p => [p.date, p]));
     return {
       grid: { left: 8, right: 16, top: 16, bottom: 8, containLabel: true },
@@ -168,7 +187,7 @@ export class IndicesTab {
         formatter: (p: { value: [string, number] }) => {
           const d = byDate.get(p.value[0]);
           if (!d) return '';
-          return `<div style="font-weight:600">${d.date}</div><div style="font-size:15px;font-weight:600">${name} ${d.value.toFixed(3)}</div>`
+          return `<div style="font-weight:600">${d.date}</div><div style="font-size:15px;font-weight:600">${name} ${d.value.toFixed(3)}${unit}</div>`
             + `<div style="color:#58625b">Cloud cover ${d.cloud_pct.toFixed(0)}%${d.excluded ? ' · <b style="color:#737c76">excluded</b>' : ''}</div>`;
         },
       },
@@ -176,8 +195,8 @@ export class IndicesTab {
       yAxis: { type: 'value', scale: true },
       series: [
         {
-          type: 'line', name, smooth: 0.25, symbol: 'circle', symbolSize: 5, lineStyle: { width: 2, color: '#2f7249' },
-          itemStyle: { color: '#2f7249' }, areaStyle: { color: 'rgba(47,114,73,0.08)' },
+          type: 'line', name, smooth: 0.25, symbol: 'circle', symbolSize: 5, lineStyle: { width: 2, color: meta.color },
+          itemStyle: { color: meta.color }, areaStyle: { color: meta.fill },
           data: pts.filter(p => !p.excluded).map(p => [p.date, p.value]),
         },
         {

@@ -119,3 +119,27 @@ Object.assign(ICONS, {
   image: CvImage, ruler: CvRuler, 'corner-down-right': CvCornerDR, octagon: CvOctagon, question: CvQuestion,
   reply: CvReply, 'package-check': CvPackageCheck, circle: CvCircle,
 });
+
+/* ---- VM0042 v2.2: site characteristics / tenure / additionality / control sites / drift (appended) */
+import {
+  Wind as HWind, CloudSun as HCloudSun, Beaker as HBeaker, Award as HAward, FileBadge as HFileBadge, Grid3x3 as HGrid,
+  Table as HTable, Workflow as HWorkflow, MapPinned as HMapPinned, CircleCheck as HCircleCheck, CircleX as HCircleX,
+  CircleAlert as HCircleAlert, ArrowLeftRight as HArrowLR, GitCompare as HCompare, Percent as HPercent,
+  Snowflake as HSnowflake, Refrigerator as HFridge, Quote as HQuote, Unlink as HUnlink, ShieldX as HShieldX,
+  Gavel as HGavel, TreePine as HTree, Droplet as HDroplet, CalendarClock as HCalClock, CalendarCheck as HCalCheck,
+  Timer as HTimer, FileSpreadsheet as HSheet, FileDown as HFileDown, Braces as HBraces, Blocks as HBlocks,
+  ChartLine as HChartLine, WandSparkles as HWand, Pickaxe as HPickaxe, Earth as HEarth, LandPlot as HLandPlot,
+  Fence as HFence, ChartScatter as HScatter, CircleDashed as HCircleDashed, Pause as HPause, RotateCw as HRotateCw,
+  ListFilter as HListFilter, Combine as HCombine, Signature as HSignature, FileKey as HFileKey, BookCheck as HBookCheck,
+} from 'lucide';
+Object.assign(ICONS, {
+  wind: HWind, 'cloud-sun': HCloudSun, beaker: HBeaker, award: HAward, 'file-badge': HFileBadge, grid: HGrid,
+  table: HTable, workflow: HWorkflow, 'map-pinned': HMapPinned, 'circle-check': HCircleCheck, 'circle-x': HCircleX,
+  'circle-alert': HCircleAlert, 'arrow-left-right': HArrowLR, compare: HCompare, percent: HPercent,
+  snowflake: HSnowflake, fridge: HFridge, quote: HQuote, unlink: HUnlink, 'shield-x': HShieldX, gavel: HGavel,
+  'tree-pine': HTree, droplet: HDroplet, 'calendar-clock': HCalClock, 'calendar-check': HCalCheck, timer: HTimer,
+  sheet: HSheet, 'file-down': HFileDown, braces: HBraces, blocks: HBlocks, 'chart-line': HChartLine, wand: HWand,
+  pickaxe: HPickaxe, earth: HEarth, 'land-plot': HLandPlot, fence: HFence, scatter: HScatter,
+  'circle-dashed': HCircleDashed, pause: HPause, 'rotate-cw': HRotateCw, 'list-filter': HListFilter,
+  combine: HCombine, signature: HSignature, 'file-key': HFileKey, 'book-check': HBookCheck,
+});

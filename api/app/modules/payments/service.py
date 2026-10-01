@@ -25,7 +25,7 @@ from app.modules.land.models import Enrolment, Field
 from app.modules.payments import domain
 from app.modules.payments.domain import money
 from app.modules.payments.models import (
-    BenefitPool, BenefitRule, Entitlement, PaymentProfile, Payout, PayoutBatch,
+    BenefitPool, BenefitRule, Entitlement, PaymentAttempt, PaymentProfile, Payout, PayoutBatch,
 )
 from app.modules.payments.providers import ProfileRef, get_payout_provider
 from app.modules.payments.schemas import BenefitRuleIn, BenefitRulePatch, PaymentProfileIn
@@ -146,6 +146,11 @@ def create_pool(db: Session, user: CurrentUser, sale_id: str) -> BenefitPool:
 
     enrolments = db.scalars(select(Enrolment).where(Enrolment.org_id == user.org_id, Enrolment.project_id == project.id,
                                                     Enrolment.status == "enrolled")).all()
+    # QA2 baseline control-site fields are enrolled only to be stratified; they earn no credits, so they don't share
+    # in the revenue of the run that produced the sold credits.
+    control_fields = {str(f) for s in ((run.inputs_snapshot or {}).get("sources") or {}).get("strata", [])
+                      if s.get("role") == "control" for f in s.get("field_ids", [])}
+    enrolments = [e for e in enrolments if str(e.field_id) not in control_fields]
     fields = {f.id: f for f in db.scalars(select(Field).where(Field.id.in_([e.field_id for e in enrolments]))).all()} \
         if enrolments else {}
     practices = [p for p in _latest_active_practices(db, user.org_id, list(fields))
@@ -342,36 +347,49 @@ def _pay(db: Session, user: CurrentUser, p: Payout, currency: str) -> None:
     prof = db.scalar(select(PaymentProfile).where(PaymentProfile.farmer_id == p.farmer_id))
     before = snapshot(p)
     p.attempts = (p.attempts or 0) + 1
+    provider_name, ref = None, None
     if prof is None or not prof.verified:
         p.status, p.failure_reason = "failed", "Payment details are missing or not verified."
     else:
-        res = get_payout_provider().pay(idempotency_key=str(p.id), amount=money(p.amount), currency=currency,
-                                        profile=_ref(prof))
+        provider = get_payout_provider()
+        provider_name = provider.name
+        res = provider.pay(idempotency_key=str(p.id), amount=money(p.amount), currency=currency, profile=_ref(prof))
+        ref = res.provider_ref
         if res.ok:
             p.status, p.provider_ref, p.paid_at, p.failure_reason = "paid", res.provider_ref, utcnow(), None
         else:
             p.status, p.failure_reason = "failed", res.reason
+    db.add(PaymentAttempt(org_id=p.org_id, created_by=user.id, payout_id=p.id, batch_id=p.batch_id,
+                          attempt_no=p.attempts, provider=provider_name, provider_ref=ref, amount=money(p.amount),
+                          currency=currency, status=p.status, error=p.failure_reason if p.status == "failed" else None))
     audit(db, user, "payout.attempt", p, before=before)
 
 
-def _settle(db: Session, user: CurrentUser, b: PayoutBatch) -> None:
+def _settle(db: Session, user: CurrentUser, b: PayoutBatch, released: list[Payout] | None = None) -> None:
     lines = db.scalars(select(Payout).where(Payout.batch_id == b.id)).all()
     before = snapshot(b)
     was = b.status
     b.status = "partially_failed" if any(x.status == "failed" for x in lines) else "completed"
     if b.status != was:
         audit(db, user, f"payout_batch.{b.status}", b, before=before)
-    if b.status == "completed" and was != "completed":
-        pool = db.get(BenefitPool, b.pool_id)
-        if not any(x.status == "on_hold" for x in lines):
-            pb = snapshot(pool)
-            pool.status = "paid"
-            audit(db, user, "benefit_pool.paid", pool, before=pb)
+    if b.status != "completed":
+        return
+    pool = db.get(BenefitPool, b.pool_id)
+    if pool.status != "paid" and not any(x.status in ("on_hold", "pending") for x in lines):
+        pb = snapshot(pool)
+        pool.status = "paid"
+        audit(db, user, "benefit_pool.paid", pool, before=pb)
+    if was != "completed":
         paid = [x for x in lines if x.status == "paid"]
-        emit(db, user, "payout.completed", b, {
-            "code": b.code, "paid": len(paid), "on_hold": sum(1 for x in lines if x.status == "on_hold"),
-            "amount_paid": str(money(sum((money(x.amount) for x in paid), Decimal(0)))), "currency": pool.currency,
-        })
+    else:  # a held payout released after the batch completed: announce only that payment
+        paid = [x for x in (released or []) if x.status == "paid"]
+        if not paid:
+            return
+    emit(db, user, "payout.completed", b, {
+        "code": b.code, "paid": len(paid), "on_hold": sum(1 for x in lines if x.status == "on_hold"),
+        "amount_paid": str(money(sum((money(x.amount) for x in paid), Decimal(0)))), "currency": pool.currency,
+        "payout_ids": [str(x.id) for x in paid], "released": was == "completed",
+    })
 
 
 def submit_payout_batch(db: Session, user: CurrentUser, batch_id: str) -> PayoutBatch:

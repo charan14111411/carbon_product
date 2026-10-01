@@ -10,9 +10,10 @@ from app.core.tenancy import get_owned, scoped
 from app.modules.lab import service
 from app.modules.lab.models import SpectralCalibration
 from app.modules.lab.schemas import (
-    BatchIn, CalibrationIn, CalibrationPatch, DispatchIn, LabIn, LabPatch, NoteIn, ResultIn, ResultPatch, ReviewIn,
-    SupersedeIn,
+    BatchIn, CalibrationIn, CalibrationPatch, DispatchIn, LabChangeIn, LabIn, LabPatch, NoteIn, ResultIn, ResultPatch,
+    ReviewIn, SupersedeIn,
 )
+from app.modules.programmes.models import Project
 from app.modules.sampling.models import Campaign
 
 router = APIRouter(tags=["Laboratory"])
@@ -191,3 +192,23 @@ def approve_calibration(cal_id: str, user: CurrentUser = Depends(REVIEW), db: Se
 @router.post("/spectral-calibrations/{cal_id}/retire")
 def retire_calibration(cal_id: str, user: CurrentUser = Depends(REVIEW), db: Session = Depends(get_db)):
     return service.calibration_out(db, service.retire_calibration(db, user, _cal(db, user, cal_id)))
+
+
+# ------------------------------------------------------------------ lab changes & spectroscopy check
+@router.post("/projects/{project_id}/lab-changes", status_code=201)
+def create_lab_change(project_id: str, body: LabChangeIn, user: CurrentUser = Depends(LAB_WRITE),
+                      db: Session = Depends(get_db)):
+    """Justify a change of laboratory (VM0042 v2.2 §8.2.1.4)."""
+    project = get_owned(db, Project, project_id, user, "Project")
+    return service.lab_change_out(db, service.create_lab_change(db, user, project, body))
+
+
+@router.get("/projects/{project_id}/lab-changes")
+def list_lab_changes(project_id: str, user: CurrentUser = Depends(require(P.READ)), db: Session = Depends(get_db)):
+    return service.list_lab_changes(db, user, get_owned(db, Project, project_id, user, "Project"))
+
+
+@router.get("/campaigns/{campaign_id}/spectroscopy-check")
+def spectroscopy_check(campaign_id: str, user: CurrentUser = Depends(RESULT_READ), db: Session = Depends(get_db)):
+    """Share of spectroscopy samples re-run by dry combustion, and the Eq. 73 model error."""
+    return service.spectroscopy_check(db, user, get_owned(db, Campaign, campaign_id, user, "Campaign"))

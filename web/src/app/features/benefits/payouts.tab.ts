@@ -6,10 +6,11 @@ import { ToastService } from '../../core/toast.service';
 import { KIT } from '../../ui/kit';
 import { Steps, money } from '../credits/credit-ui';
 import { PayoutBatch, PayoutLine, PeopleDirectory } from './benefit-types';
+import { Attempt, ReconcilePanel } from './reconcile';
 
 @Component({
   selector: 'vcx-payouts-tab',
-  imports: [...KIT, DayPipe, Steps],
+  imports: [...KIT, DayPipe, Steps, ReconcilePanel],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="bar">
@@ -64,6 +65,8 @@ import { PayoutBatch, PayoutLine, PeopleDirectory } from './benefit-types';
           } @else if (b.status === 'partially_failed') {
             <vc-callout tone="warn" icon="alert">Some payments didn't go through. Fix the farmer's payment details if needed, then retry each failed line.</vc-callout>
           }
+          <vc-tabs [tabs]="subTabs()" [active]="sub()" (activeChange)="setSub($any($event))" />
+          @if (sub() === 'lines') {
           <div class="card">
             <div class="table-wrap">
               <table class="table">
@@ -83,6 +86,10 @@ import { PayoutBatch, PayoutLine, PeopleDirectory } from './benefit-types';
                       <td class="mono small nowrap">{{ l.provider_ref || '—' }}</td>
                       <td class="num">
                         @if (l.status === 'failed' && canRun) { <button class="btn btn-secondary btn-sm" [disabled]="busy()" (click)="retry(l)"><vc-icon name="refresh" [size]="13" />Retry</button> }
+                        @if (l.status === 'on_hold' && canApprove) {
+                          @if (b.created_by === me) { <span class="small subtle" title="You prepared this batch, so a colleague must release held payouts">Needs a colleague</span> }
+                          @else { <button class="btn btn-secondary btn-sm" [disabled]="busy()" (click)="releasing.set(l)"><vc-icon name="unlock" [size]="13" />Release</button> }
+                        }
                       </td>
                     </tr>
                   }
@@ -91,6 +98,29 @@ import { PayoutBatch, PayoutLine, PeopleDirectory } from './benefit-types';
               </table>
             </div>
           </div>
+          }
+          @if (sub() === 'attempts') {
+            <div class="card">
+              @if (attemptsLoading()) { <vc-loading [rows]="4" /> }
+              @else if (!attempts().length) { <vc-empty icon="history" title="No payment attempts yet" text="Every hand-over to the payment provider is logged here once the batch is submitted." /> }
+              @else {
+                <div class="table-wrap">
+                  <table class="table">
+                    <thead><tr><th>When</th><th>Farmer</th><th class="num">Try</th><th class="num">Amount</th><th>Result</th><th>Provider ref</th><th>Error</th></tr></thead>
+                    <tbody>
+                      @for (a of attempts(); track a.id) {
+                        <tr><td class="nowrap small">{{ a.at | day: true }}</td><td class="nowrap">{{ lineName(a.payout_id) }}</td><td class="num">#{{ a.attempt_no }}</td>
+                          <td class="num">{{ m(a.amount) }}</td><td><vc-badge [status]="a.status" /></td>
+                          <td class="mono small nowrap">{{ a.provider_ref || '—' }}</td><td class="small reason">{{ a.error || '—' }}</td></tr>
+                      }
+                    </tbody>
+                  </table>
+                </div>
+                <p class="small subtle foot">Provider: {{ attempts()[0].provider }}. Each attempt reuses the payout's idempotency key, so the provider never pays the same line twice.</p>
+              }
+            </div>
+          }
+          @if (sub() === 'reconcile') { <vcx-reconcile [batch]="b" [names]="lineNames()" /> }
           @if (actionError()) { <vc-error title="Not done" [message]="actionError()!" /> }
         </div>
       }
@@ -108,6 +138,22 @@ import { PayoutBatch, PayoutLine, PeopleDirectory } from './benefit-types';
           }
           @if (b.status !== 'draft' && b.status !== 'approved') { <button class="btn btn-ghost" (click)="detail.set(null)">Close</button> }
         }
+      </ng-container>
+    </vc-modal>
+
+    <vc-modal [open]="!!releasing()" (closed)="releasing.set(null)" title="Release this payout?" width="480px" [subtitle]="releasing()?.farmer_name ?? ''">
+      @if (releasing(); as l) {
+        <div class="stack">
+          <p><strong>{{ m(l.amount) }}</strong> is on hold: {{ l.failure_reason || 'held back' }}</p>
+          <p class="muted small">Releasing checks that the farmer's payment details are verified and the amount meets the minimum payout.
+            @if (detail()?.status !== 'draft' && detail()?.status !== 'approved') { Because this batch has already been submitted, the payment is sent straight away. }</p>
+          <vc-callout tone="info" icon="shield">A second person is required: you can't release a payout in a batch you prepared, or for payment details you verified.</vc-callout>
+          @if (releaseError()) { <vc-error title="Not released" [message]="releaseError()!" /> }
+        </div>
+      }
+      <ng-container footer>
+        <button class="btn btn-ghost" (click)="releasing.set(null)">Cancel</button>
+        <button class="btn btn-primary" [disabled]="busy()" (click)="release()"><vc-icon name="unlock" [size]="15" />Release payout</button>
       </ng-container>
     </vc-modal>
 
@@ -132,6 +178,7 @@ import { PayoutBatch, PayoutLine, PeopleDirectory } from './benefit-types';
     tfoot td{padding:12px 14px;border-top:1px solid var(--border);background:var(--surface-2)}
     .self{color:var(--amber-600);margin-right:auto}
     vc-stat{box-shadow:none}
+    .foot{padding:10px 20px;border-top:1px solid var(--border)}
   `],
 })
 export class PayoutsTab {
@@ -153,6 +200,18 @@ export class PayoutsTab {
   detailLoading = signal(false);
   actionError = signal<string | null>(null);
   confirmSubmit = signal(false);
+  sub = signal<'lines' | 'attempts' | 'reconcile'>('lines');
+  attempts = signal<Attempt[]>([]);
+  attemptsLoading = signal(false);
+  releasing = signal<PayoutLine | null>(null);
+  releaseError = signal<string | null>(null);
+  subTabs = computed(() => {
+    const b = this.detail();
+    const submitted = !!b && !['draft', 'approved'].includes(b.status);
+    return [{ key: 'lines', label: 'Payout lines', count: b?.lines?.length ?? null },
+      { key: 'attempts', label: 'Attempts log' }, ...(submitted ? [{ key: 'reconcile', label: 'Reconciliation' }] : [])];
+  });
+  lineNames = computed(() => Object.fromEntries((this.detail()?.lines ?? []).map(l => [l.id, l.farmer_name ?? 'Farmer'])));
 
   pendingCount = computed(() => (this.detail()?.lines ?? []).filter(l => l.status === 'pending').length);
   pendingSum = computed(() => (this.detail()?.lines ?? []).filter(l => l.status === 'pending').reduce((a, l) => a + Number(l.amount), 0));
@@ -180,7 +239,34 @@ export class PayoutsTab {
     return Object.entries(b.counts).filter(([, n]) => n).map(([k, n]) => ({ k, n, label: L[k] ?? k }));
   }
 
+  lineName(id: string) { return this.lineNames()[id] ?? 'Farmer'; }
+  setSub(t: 'lines' | 'attempts' | 'reconcile') {
+    this.sub.set(t);
+    if (t === 'attempts') this.loadAttempts();
+  }
+  loadAttempts() {
+    const b = this.detail();
+    if (!b) return;
+    this.attemptsLoading.set(true);
+    this.api.get<Attempt[]>(`/payout-batches/${b.id}/attempts`).subscribe({
+      next: r => { this.attempts.set(r); this.attemptsLoading.set(false); },
+      error: e => { this.attemptsLoading.set(false); this.attempts.set([]); this.toast.apiError(e, "Couldn't load the attempts log"); },
+    });
+  }
+  release() {
+    const l = this.releasing();
+    if (!l) return;
+    this.busy.set(true);
+    this.releaseError.set(null);
+    this.api.post<PayoutBatch>(`/payouts/${l.id}/release`).subscribe({
+      next: nb => { this.releasing.set(null); this.after(nb, `Released payout for ${l.farmer_name}`); if (this.sub() === 'attempts') this.loadAttempts(); },
+      error: (e: ApiError) => { this.busy.set(false); this.releaseError.set(e.code === 'SELF_APPROVAL_REJECTED' ? `${e.message} Releasing a held payout always needs a second person.` : e.message); },
+    });
+  }
+
   open(id: string) {
+    this.sub.set('lines');
+    this.releaseError.set(null);
     this.actionError.set(null);
     this.detailLoading.set(true);
     this.api.get<PayoutBatch>(`/payout-batches/${id}`).subscribe({

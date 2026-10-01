@@ -1,6 +1,6 @@
 import uuid
 from dataclasses import replace
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
@@ -324,3 +324,227 @@ def test_unpaired_site_in_paired_monitoring(client, org):
     client.post(f"/api/projects/{f.pid}/qa/run", headers=f.planner)
     rows = _findings(client, f, rule="UNPAIRED_SITE")
     assert [(x["entity_id"], x["severity"]) for x in rows] == [(mp[2]["id"], "warning")]
+
+
+# ------------------------------------------------------------------ VM0042 v2.2 rules (pass + fail each)
+T0 = datetime(2024, 2, 10, 9, 0, tzinfo=UTC)
+
+
+def _ref(f):
+    return f.details.get("reference", "")
+
+
+def test_shipped_late():
+    ctx = sample_ctx(campaign_last_collected_at=T0, custody_times={"dispatched": T0 + timedelta(days=4)})
+    assert check("SHIPPED_LATE", ctx) is None
+    late = check("SHIPPED_LATE", replace(ctx, custody_times={"dispatched": T0 + timedelta(days=6)}))
+    assert late.severity == "blocking" and "§8.2.1.3(5)" in _ref(late)
+    assert check("SHIPPED_LATE", sample_ctx()) is None  # not dispatched yet
+    assert check("SHIPPED_LATE", replace(ctx, rules={})).severity == "info"
+
+
+def test_storage_too_long_and_frozen():
+    times = {"lab_received": T0, "analysed": T0 + timedelta(days=60)}
+    ctx = sample_ctx(custody_times=times, storage_conditions=["refrigerated"])
+    assert check("STORAGE_TOO_LONG", ctx) is None
+    long = replace(ctx, custody_times={"lab_received": T0, "analysed": T0 + timedelta(days=120)})
+    assert check("STORAGE_TOO_LONG", long).severity == "warning"
+    assert check("STORAGE_TOO_LONG", replace(long, storage_conditions=["dried"])) is None
+    by_result = replace(ctx, custody_times={"lab_received": T0}, first_analysed_on=date(2024, 7, 1))
+    assert check("STORAGE_TOO_LONG", by_result).severity == "warning"
+    assert check("STORAGE_TOO_LONG", replace(long, rules={})).severity == "info"
+    assert check("FROZEN_STORAGE", ctx) is None
+    frozen = check("FROZEN_STORAGE", replace(ctx, storage_conditions=["frozen"]))
+    assert frozen.severity == "warning" and "p.32" in _ref(frozen)
+
+
+def test_resample_increments():
+    mon = sample_ctx(campaign_kind="monitoring")
+    assert check("RESAMPLE_INCREMENTS", mon) is None
+    assert check("RESAMPLE_INCREMENTS", replace(mon, layers=[(0, 30)])).severity == "blocking"
+    assert check("RESAMPLE_INCREMENTS", sample_ctx(layers=[(0, 30)])) is None  # baseline
+    assert check("RESAMPLE_INCREMENTS", replace(mon, rules={})).severity == "info"
+
+
+def test_reporting_depth_shallow():
+    assert check("REPORTING_DEPTH_SHALLOW", sample_ctx()) is None
+    shallow = sample_ctx(depth_reached_cm=20, layers=[(0, 20)])
+    assert check("REPORTING_DEPTH_SHALLOW", shallow).severity == "blocking"
+    documented = replace(shallow, depth_limit="bedrock", deviation_reason="Granite at 20 cm")
+    assert check("REPORTING_DEPTH_SHALLOW", documented).severity == "info"
+    assert check("REPORTING_DEPTH_SHALLOW", replace(shallow, depth_limit="stones",
+                                                    deviation_reason="stones")).severity == "blocking"
+    assert check("REPORTING_DEPTH_SHALLOW", replace(shallow, rules={})).severity == "info"
+
+
+def test_duplicate_gps():
+    assert check("DUPLICATE_GPS", sample_ctx()) is None
+    assert check("DUPLICATE_GPS", sample_ctx(near_duplicates=["ST-A-002-BL"])).severity == "warning"
+
+
+def test_monitoring_before_baseline_and_stale():
+    mon = sample_ctx(campaign_kind="monitoring", collected_at=T0, baseline_collected_at=T0 - timedelta(days=3 * 365))
+    assert check("MONITORING_BEFORE_BASELINE", mon) is None
+    early = replace(mon, baseline_collected_at=T0 + timedelta(days=30))
+    assert check("MONITORING_BEFORE_BASELINE", early).severity == "blocking"
+    assert check("MONITORING_BEFORE_BASELINE", sample_ctx(collected_at=T0)) is None  # baseline sample
+    assert check("STALE_REMEASUREMENT", mon) is None
+    stale = replace(mon, baseline_collected_at=T0 - timedelta(days=6 * 365))
+    assert check("STALE_REMEASUREMENT", stale).severity == "blocking"
+    fallback = {k: v for k, v in RULES.items() if k != "remeasure_max_years"}
+    assert check("STALE_REMEASUREMENT", replace(stale, rules=fallback)).details["rule_key"] == \
+        "monitoring_interval_max_years"
+    assert check("STALE_REMEASUREMENT", replace(stale, rules={})).severity == "info"
+
+
+def test_unit_method_and_detection_rules():
+    assert check("UNIT_MISMATCH", result_ctx(unit="%")) is None
+    assert check("UNIT_MISMATCH", result_ctx(unit="g/kg", unit_ok=False, canonical_unit="%")).severity == "blocking"
+    assert check("UNIT_MISMATCH", result_ctx(unit_ok=False, status="voided")) is None
+    assert check("METHOD_NOT_RECOMMENDED", result_ctx()) is None
+    wb = check("METHOD_NOT_RECOMMENDED", result_ctx(method="walkley_black", method_justification="No analyser"))
+    assert wb.severity == "warning" and "§8.2.1.4" in _ref(wb) and wb.details["justification"] == "No analyser"
+    assert check("BELOW_DETECTION_LIMIT", result_ctx()) is None
+    bdl = check("BELOW_DETECTION_LIMIT", result_ctx(value=0.05, detection_limit=0.1, below_detection_limit=True))
+    assert bdl.severity == "warning"
+
+
+def test_missing_soil_mass_inputs():
+    full = engine.LayerCtx(entity_id="l1", code="L1", accepted_analytes=set(), rules=dict(RULES),
+                           has_fine_soil_mass=True, probe_diameter_mm=50, cores_composited=5)
+    assert check("MISSING_SOIL_MASS_INPUTS", full) is None
+    f = check("MISSING_SOIL_MASS_INPUTS", replace(full, has_fine_soil_mass=False, probe_diameter_mm=None))
+    assert f.severity == "info" and f.details["missing"] == ["fine_soil_mass_g", "probe_diameter_mm"]
+
+
+def _camp(**kw) -> engine.CampaignCtx:
+    base = engine.CampaignCtx(entity_id="c1", code="M1", kind="monitoring", rules=dict(RULES), season_reference="BL",
+                              season_gap_days=10, season_window_days=45)
+    return replace(base, **kw)
+
+
+def test_campaign_rules():
+    assert check("SEASON_MISMATCH", _camp()) is None
+    assert check("SEASON_MISMATCH", _camp(season_gap_days=90)).severity == "blocking"
+    assert check("SEASON_MISMATCH", _camp(season_gap_days=90,
+                                          season_override_reason="Monsoon delayed access")).severity == "warning"
+    assert check("SEASON_MISMATCH", _camp(kind="baseline", season_gap_days=90)) is None
+    assert check("LAB_CHANGE_UNJUSTIFIED", _camp()) is None
+    assert check("LAB_CHANGE_UNJUSTIFIED", _camp(unjustified_labs=["LAB-2"],
+                                                 reference_labs=["LAB-1"])).severity == "blocking"
+    assert check("SPECTROSCOPY_CHECK_LOW", _camp()) is None  # no spectroscopy
+    assert check("SPECTROSCOPY_CHECK_LOW", _camp(n_spectroscopy=20, n_spectroscopy_checked=2)) is None
+    low = check("SPECTROSCOPY_CHECK_LOW", _camp(n_spectroscopy=20, n_spectroscopy_checked=1))
+    assert low.severity == "blocking" and "Eq. 73" in _ref(low)
+    assert check("SPECTROSCOPY_CHECK_LOW", _camp(n_spectroscopy=20, rules={})).severity == "info"
+
+
+def test_lab_and_stratum_rules():
+    lab = engine.LabCtx(entity_id="lab", code="LAB-1", iso17025=True, proficiency_program="NAPT",
+                        has_error_report=True, rules={})
+    assert check("LAB_QC_EVIDENCE_MISSING", lab) is None
+    gaps = check("LAB_QC_EVIDENCE_MISSING", replace(lab, iso17025=None, proficiency_program="none"))
+    assert gaps.severity == "info" and len(gaps.details["missing"]) == 2
+    st = engine.StratumCtx(entity_id="st", code="A", criteria={"soil_type": "red"}, rules={})
+    assert check("STRATIFICATION_FACTORS_MISSING", st) is None
+    assert check("STRATIFICATION_FACTORS_MISSING", replace(st, criteria={})).severity == "warning"
+    assert check("STRATIFICATION_FACTORS_MISSING", replace(st, criteria={"district": "X"})).severity == "warning"
+
+
+def test_too_few_composites():
+    ctx = engine.PlanCtx(entity_id="p1", stratum_code="A", campaign_code="BL", plan_status="approved", plan_n=3,
+                         collected=3, rules=dict(RULES))
+    assert check("TOO_FEW_COMPOSITES", ctx) is None
+    assert check("TOO_FEW_COMPOSITES", replace(ctx, collected=2)).severity == "blocking"
+    only_samples = {k: v for k, v in RULES.items() if k != "min_composites_per_stratum"}
+    assert check("TOO_FEW_COMPOSITES", replace(ctx, collected=4, rules=only_samples)).details["required"] == 5
+    assert check("TOO_FEW_COMPOSITES", replace(ctx, rules={})).severity == "info"
+
+
+def test_vm0042_rules_registered_with_references():
+    new = {"SHIPPED_LATE", "STORAGE_TOO_LONG", "FROZEN_STORAGE", "SEASON_MISMATCH", "RESAMPLE_INCREMENTS",
+           "REPORTING_DEPTH_SHALLOW", "TOO_FEW_COMPOSITES", "DUPLICATE_GPS", "MONITORING_BEFORE_BASELINE",
+           "UNIT_MISMATCH", "STALE_REMEASUREMENT", "MISSING_SOIL_MASS_INPUTS", "METHOD_NOT_RECOMMENDED",
+           "LAB_CHANGE_UNJUSTIFIED", "SPECTROSCOPY_CHECK_LOW", "BELOW_DETECTION_LIMIT", "LAB_QC_EVIDENCE_MISSING",
+           "STRATIFICATION_FACTORS_MISSING"}
+    assert new <= set(engine.BY_CODE)
+
+
+# ------------------------------------------------------------------ VM0042 v2.2 rules through the service
+def _run(client, f):
+    r = client.post(f"/api/projects/{f.pid}/qa/run", headers=f.planner)
+    assert r.status_code == 200, r.text
+
+
+def test_custody_timing_findings_via_api(client, org, as_role):
+    f = Flow(client, org)
+    _, points = f.placed_campaign(n=5)
+    s = f.submit(points[0]).json()["sample"]
+    lab = as_role("lab_manager")
+    url = f"/api/samples/{s['id']}/custody"
+    t = datetime(2024, 2, 10, 9, 30, tzinfo=UTC)
+    for ev, days, extra in (("dispatched", 8, {}),
+                            ("lab_received", 9, {"seal_intact": True, "count_matches": True,
+                                                 "storage": {"condition": "frozen"}})):
+        r = client.post(url, headers=lab, json={"event": ev, "occurred_at": (t + timedelta(days=days)).isoformat(),
+                                                **extra})
+        assert r.status_code == 201, r.text
+    _run(client, f)
+    late = _findings(client, f, rule="SHIPPED_LATE")
+    assert [(x["entity_id"], x["severity"]) for x in late] == [(s["id"], "blocking")]
+    assert "VM0042 v2.2" in late[0]["details"]["reference"]
+    assert _findings(client, f, rule="FROZEN_STORAGE")[0]["severity"] == "warning"
+
+
+def test_layer_and_plan_findings_via_api(client, org):
+    f = Flow(client, org)
+    _, points = f.placed_campaign(n=5)
+    f.submit(points[0], probe_diameter_mm=None)
+    _run(client, f)
+    soil = _findings(client, f, rule="MISSING_SOIL_MASS_INPUTS")
+    assert len(soil) == 2 and all(x["severity"] == "info" for x in soil)
+    assert "probe_diameter_mm" in soil[0]["details"]["missing"]
+    few = _findings(client, f, rule="TOO_FEW_COMPOSITES")
+    assert few and few[0]["severity"] == "blocking" and few[0]["details"]["required"] == 3
+    assert _findings(client, f, rule="STRATIFICATION_FACTORS_MISSING") == []
+
+
+def test_season_mismatch_from_stored_data(client, org):
+    from app.modules.sampling.models import Campaign
+
+    f = Flow(client, org)
+    bl, points = f.placed_campaign(n=5, planned_start="2021-02-01", planned_end="2021-03-01")
+    m = f.campaign("MON-S", kind="monitoring", revisits_campaign_id=bl["id"], planned_start="2024-02-01",
+                   planned_end="2024-03-01")
+    _run(client, f)
+    assert _findings(client, f, rule="SEASON_MISMATCH") == []
+    with dbmod.session_factory()() as s:  # a later date change (imported data) moves it out of season
+        s.get(Campaign, uuid.UUID(m["id"])).planned_start = date(2024, 7, 1)
+        s.commit()
+    _run(client, f)
+    season = _findings(client, f, rule="SEASON_MISMATCH")
+    assert [(x["entity_id"], x["severity"], x["status"]) for x in season] == [(m["id"], "blocking", "open")]
+
+
+def test_duplicate_gps_and_monitoring_before_baseline_via_api(client, org):
+    f = Flow(client, org)
+    bl, points = f.placed_campaign(n=5, planned_start="2021-02-01", planned_end="2021-03-01")
+    first = f.submit(points[0], collected_at="2021-02-10T09:00:00+00:00").json()["sample"]
+    twin = f.submit(points[1], collected_at="2021-02-10T10:00:00+00:00", latitude=points[0]["latitude"],
+                    longitude=points[0]["longitude"])
+    assert twin.status_code == 201
+    dup = {x["rule_code"] for x in twin.json()["findings"]}
+    assert "DUPLICATE_GPS" in dup
+    m = f.campaign("MON-B", kind="monitoring", revisits_campaign_id=bl["id"], planned_start="2024-02-01",
+                   planned_end="2024-03-01")
+    st = client.get(f"/api/projects/{f.pid}/strata", headers=f.planner).json()[0]
+    f.plan(m["id"], st["id"], 5)
+    client.post(f"/api/campaigns/{m['id']}/place-points", headers=f.planner)
+    mp = client.get(f"/api/campaigns/{m['id']}/points", headers=f.planner).json()
+    target = next(p for p in mp if p["site_id"] == first["site_id"])
+    admin = login(client, make_user(org, "platform_admin"))
+    early = client.post("/api/samples", headers=admin, json=f.sample_body(
+        target, collected_at="2021-02-01T09:00:00+00:00"))
+    assert early.status_code == 201, early.text
+    codes = {x["rule_code"]: x["severity"] for x in early.json()["findings"]}
+    assert codes.get("MONITORING_BEFORE_BASELINE") == "blocking"

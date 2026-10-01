@@ -45,9 +45,103 @@ export interface StratumResult {
   excluded_sites: string[];
   control_code: string | null;
   control_delta_t_c_ha: number | null;
+  /* VM0042 v2.2 (Eq. 70–71, ESM) — absent on runs made before engine v2.2 */
+
+  reference_mass_t_ha?: number;
+  s2_f?: number;
+  s2_s?: number;
+  cov_fs?: number;
+  s2_wp?: number;
+  s2_bsl?: number;
+  s2_dsoc?: number;
+  annual_delta_t_c_ha?: number | null;
+  quantification_unit?: string | null;
 }
 
-export interface TermResult { term: string; value_t_co2e: number; variance: number; df: number | null; source: string; status: string }
+export interface TermResult {
+  term: string; value_t_co2e: number; variance: number; df: number | null; source: string; status: string;
+  data_class?: string; used_as?: string;
+}
+
+/** One line of the engine's equation trail (VM0042 v2.2 equation numbers). */
+export interface EquationRow { eq: string; label: string; value: number | null; unit: string }
+
+export interface VintageRow {
+  year: number; weight: number; share: number; indicator: number; cumulative_d_wp_t_co2e: number;
+  sum_delta_e_t_co2e: number; delta_e: Record<string, number>; d_wp_t_co2e: number; d_bsl_t_co2e: number;
+  gross_t_co2e: number; er_t_co2e: number; cr_t_co2e: number; leakage_t_co2e: number; lk_er_t_co2e: number;
+  lk_cr_t_co2e: number; er_net_t_co2e: number; cr_net_t_co2e: number; err_net_t_co2e: number;
+  buffer_er_t_co2e: number; buffer_cr_t_co2e: number; buffer_er_eq75_t_co2e: number; buffer_cr_eq76_t_co2e: number;
+  vcu_er: number; vcu_cr: number; vcu: number;
+}
+
+export interface SocOut {
+  approach: string; stock_method: string; measurement_interval_years: number | null; period_years: number;
+  credited_years: number; reporting_depth_cm: number; soil_wp_t_co2e: number; biochar_t_co2e: number;
+  soil_wp_after_biochar_t_co2e: number; soil_bsl_t_co2e: number; tree_wp_t_co2e: number; tree_bsl_t_co2e: number;
+  unc_co2: number; i_soil: number; multiplier: number; d_wp_t_co2e: number; d_bsl_t_co2e: number;
+  prior_cumulative_d_wp_t_co2e: number; source: string;
+  multistage?: MultistageSummary;
+}
+
+/** VM0042 Appendix 6 design summary carried on results.soc when the campaign used a multi-stage design. */
+export interface MultistageSummary {
+  design_id: string; version: number; stage1_unit: string; stage1_selection: string; description: string; estimator: string;
+  population_area_ha: number; total_start_t_c: number; total_final_t_c: number; delta_t_c: number;
+  variance_project_t_c2: number; variance_control_t_c2: number; df: number | null;
+  units: { key: string; label: string; field_selection: string; k: number; probability: number; draws: number; total_start_t_c: number;
+    total_final_t_c: number; s2_start: number; s2_final: number; cov: number; s2_change: number; df: number | null; eq: string }[];
+}
+
+export interface UncSource {
+  approach?: string; eq?: string; method?: string; s2_mean?: number; mean?: number; df?: number | null; t?: number | null;
+  unc_pct?: number; i_soil?: number; multiplier?: number; confidence?: number; source?: string; variance?: number;
+  value_t_co2e?: number; after_uncertainty?: number; ef_end?: string;
+}
+
+/** QA3 per-source summary (emissions module). */
+export interface Qa3Source {
+  label: string; eq: string; symbol: string; approach: string; ef_end: 'central' | 'low' | 'high' | string;
+  baseline_t_co2e: number; project_t_co2e: number; reduction_t_co2e: number;
+  per_year: { year: number; baseline_t_co2e: number; project_t_co2e: number; reduction_t_co2e: number }[];
+}
+
+export interface LeakageItem {
+  field_id: string; year: number; type: string; mass_t: number; additional_t: number; carbon_content: number | null;
+  exemption: string | null; weight: number; le_oa_t_co2e: number; eq: string;
+}
+
+export interface Qa3Result {
+  years: number[]; year_weights: Record<string, number>; sources: Record<string, Qa3Source>;
+  by_year: Record<string, Record<string, number>>; leakage_oa_by_year: Record<string, number>;
+  leakage_items: LeakageItem[]; biochar_t_co2e: number; biochar_items: { field_id: string; year: number; organic_carbon_t: number; t_co2e: number }[];
+  units: { source: string; unit: string; year: number; area_ha: number; baseline_t_co2e_ha: number; project_t_co2e_ha: number; weight: number; reduction_t_co2e: number }[];
+  fields: { field_id: string; unit: string; year: number; baseline_data_year: number | null; area_ha: number; baseline_t_co2e: number; project_t_co2e: number; baseline_t_co2e_ha: number | null; project_t_co2e_ha: number | null }[];
+  trail: { source: string; eq: string; field_id: string; scenario: string; year: number; data_year: number; t_co2e: number; inputs: Record<string, unknown>; factor_end: string }[];
+  tiers: Record<string, number>; skipped_sources: string[]; warnings: string[];
+  factors_used: Record<string, { value: number; end: string; range_missing?: boolean }>;
+  /** §8.3 / §8.4.2 livestock floor adjustments, one per field-year-type. */
+  livestock_floor?: LivestockFloorItem[];
+  /** Option (a) applied somewhere: displacement leakage (VMD0054, Eq. 36) must be quantified. */
+  displacement_leakage_required?: boolean;
+}
+
+export interface LivestockFloorItem { field_id: string; year: number; type: string; lookback_average_head: number; project_head: number; option: 'a' | 'b' }
+
+export interface EmissionsOut {
+  qa3: Qa3Result | null; sum_delta_e_t_co2e: number; sum_delta_e_before_uncertainty_t_co2e: number;
+  components: Record<string, number>; symbols: Record<string, string>; excluded_de_minimis: string[];
+}
+
+export interface LeakageOut {
+  le_oa_t_co2e: number; le_oa_by_year: Record<string, number>; le_oa_items: LeakageItem[]; le_br_t_co2e: number;
+  lk_disp_t_co2e: number; other_t_co2e: number; total_t_co2e: number; lk_er_t_co2e: number; lk_cr_t_co2e: number;
+}
+
+export interface DeMinimis {
+  threshold_pct: number; total_benefit_t_co2e: number; candidates: string[]; excluded: string[];
+  shares_pct: Record<string, number | null>;
+}
 
 export interface EngineResult {
   stock_method: string;
@@ -75,6 +169,16 @@ export interface EngineResult {
   removals_t_co2e: number;
   split: Record<string, number>;
   flags: Record<string, boolean>;
+  /* VM0042 v2.2 — absent on runs made before engine v2.2 */
+  soc_approach?: string;
+  soc?: SocOut;
+  emissions?: EmissionsOut;
+  leakage?: LeakageOut;
+  uncertainty?: Record<string, UncSource | Record<string, UncSource>>;
+  vintages?: VintageRow[];
+  equations?: EquationRow[];
+  de_minimis?: DeMinimis;
+  warnings?: string[];
 }
 
 export interface RulesSnapshot {
@@ -168,13 +272,30 @@ export const TERM_LABELS: Record<string, string> = {
   baseline_emissions: 'Baseline emissions',
   project_emissions: 'Project emissions',
   leakage: 'Leakage',
+  soc_project_modelled: 'Project SOC change (modelled, QA1)',
+  ch4_soil: 'Soil CH₄ reduction (modelled, QA1)',
+  n2o_soil: 'Soil N₂O reduction (modelled, QA1)',
+  leakage_biomass_residues: 'Leakage: biomass residues (LE_BR)',
+  leakage_displacement: 'Leakage: displacement (LK_disp)',
+  woody_biomass_project: 'Trees & shrubs, project',
+  woody_biomass_baseline: 'Trees & shrubs, baseline',
 };
+
+/** Terms a person may record by hand; the others are published by the QA1, woody-biomass and leakage screens. */
+export const MANUAL_TERMS = ['baseline_scenario', 'baseline_emissions', 'project_emissions', 'leakage'];
 
 export const TERM_HELP: Record<string, string> = {
   baseline_scenario: 'Soil-carbon change that would have happened anyway without the project. Subtracted.',
   baseline_emissions: 'Emissions (fertiliser N₂O, fuel, burning) that the old practice would have caused. Added back.',
   project_emissions: 'Emissions the new practice causes, such as extra machinery passes. Subtracted.',
   leakage: 'Emissions pushed outside the project area, for example displaced grazing. Subtracted.',
+  soc_project_modelled: 'Project soil-carbon change from an approved biogeochemical model run (QA1, Eq. 47). Published from the Process model (QA1) screen.',
+  ch4_soil: 'Modelled reduction in soil methane (Eq. 10, 54). Published from the Process model (QA1) screen.',
+  n2o_soil: 'Modelled reduction in soil nitrous oxide (Eq. 15, 58). Published from the Process model (QA1) screen.',
+  leakage_biomass_residues: 'Residues that used to be burnt for energy and are now kept on the field (§8.4.4, CDM TOOL16). Subtracted.',
+  leakage_displacement: 'Livestock or production moved elsewhere because of the project (Eq. 34–36, VMD0054). Subtracted.',
+  woody_biomass_project: 'Tree and shrub carbon change in the project scenario (Eq. 49/51). Added through Eq. 45.',
+  woody_biomass_baseline: 'Tree and shrub carbon change in the baseline scenario (Eq. 48/50). Added through Eq. 44.',
 };
 
 export const TERM_STATUS: Record<string, string> = {

@@ -71,6 +71,8 @@ ROLES: dict[str, frozenset[P]] = {
     "finance_maker": frozenset({P.READ, P.PREPARE_PAYOUT}),
     "finance_checker": frozenset({P.READ, P.APPROVE_PAYOUT}),
     "farmer": frozenset({P.FARMER_SELF}),
+    # Programme owner's client: read-only, personal data masked by the API.
+    "client_viewer": frozenset({P.READ, P.BUYER_READ}),
 }
 
 ROLE_LABELS = {
@@ -86,6 +88,7 @@ ROLE_LABELS = {
     "finance_maker": "Finance (prepare)",
     "finance_checker": "Finance (approve)",
     "farmer": "Farmer",
+    "client_viewer": "Client (read-only)",
 }
 
 
@@ -105,4 +108,5 @@ ROLE_DESCRIPTIONS = {
     "finance_maker": "Prepares benefit rules, farmer payout pools and payment batches.",
     "finance_checker": "Approves benefit rules, pools and payment batches prepared by someone else.",
     "farmer": "Sees their own fields, consents, payments and complaints.",
+    "client_viewer": "A programme client's read-only view of progress and results; farmer personal data is masked.",
 }

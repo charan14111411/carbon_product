@@ -58,6 +58,7 @@ const SHARED = `
     </section>
 
     <div class="quick">
+      <a routerLink="/farmer/plan" class="q wide"><vc-icon name="clipboard-check" [size]="22" /><strong>My plan</strong><span lang="kn">ನನ್ನ ಯೋಜನೆ</span><em>The practices you agreed to, year by year</em></a>
       <a routerLink="/farmer/fields" class="q"><vc-icon name="sprout" [size]="22" /><strong>My fields</strong><span lang="kn">ನನ್ನ ಹೊಲಗಳು</span></a>
       <a routerLink="/farmer/payment-details" class="q"><vc-icon name="landmark" [size]="22" /><strong>Payment details</strong><span lang="kn">ಪಾವತಿ ವಿವರಗಳು</span></a>
       <a routerLink="/farmer/consents" class="q"><vc-icon name="shield-check" [size]="22" /><strong>My consents</strong><span lang="kn">ನನ್ನ ಒಪ್ಪಿಗೆಗಳು</span></a>
@@ -81,6 +82,7 @@ const SHARED = `
     .quick{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px}
     .q{display:flex;flex-direction:column;gap:4px;padding:16px;border-radius:16px;background:var(--surface);border:1px solid var(--border);color:var(--stone-800);text-decoration:none!important}
     .q vc-icon{color:var(--forest-600);margin-bottom:6px} .q strong{font-size:16px} .q span{font-size:13.5px;color:var(--clay-600)}
+    .q.wide{grid-column:1 / -1} .q em{font-style:normal;font-size:14px;color:var(--stone-600)}
   `],
 })
 export class FarmerHome {

@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, effect, inject, input, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { RouterLink } from '@angular/router';
+import { ActivatedRoute, RouterLink } from '@angular/router';
 import { ApiError, ApiService } from '../../core/api.service';
 import { AuthService } from '../../core/auth.service';
 import { AgoPipe, DayPipe, HumanPipe, NumPipe } from '../../core/format';
@@ -8,11 +8,14 @@ import { ToastService } from '../../core/toast.service';
 import { Icon } from '../../ui/icon';
 import { Badge, Callout, DataClass, Empty, ErrorBox, Hash, Loading, Modal, PageHeader, TabItem, Tabs } from '../../ui/kit';
 import { People, saveBlob } from '../calculations/calc.types';
-import { Integrity, PACKAGE_SECTIONS, Package, VerifierAccess, VerifierQuery } from './verification.types';
+import { ConformanceItem, Integrity, PACKAGE_SECTIONS, Package, SECTION_UNIT, V2_SECTIONS, VerifierAccess, VerifierQuery, sectionCount } from './verification.types';
+import { Conformance } from './conformance';
+import { EquationTrail } from '../calculations/vm0042-panels';
+import { EquationRow } from '../calculations/calc.types';
 
 @Component({
   selector: 'vc-package-detail',
-  imports: [FormsModule, RouterLink, PageHeader, Icon, Badge, DataClass, Hash, Empty, ErrorBox, Loading, Modal, Callout, Tabs, NumPipe, DayPipe, AgoPipe, HumanPipe],
+  imports: [FormsModule, RouterLink, PageHeader, Icon, Badge, DataClass, Hash, Empty, ErrorBox, Loading, Modal, Callout, Tabs, NumPipe, DayPipe, AgoPipe, HumanPipe, Conformance, EquationTrail],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <a routerLink="/app/verification" class="back"><vc-icon name="arrow-left" [size]="14" />All packages</a>
@@ -26,6 +29,7 @@ import { Integrity, PACKAGE_SECTIONS, Package, VerifierAccess, VerifierQuery } f
         [subtitle]="p.summary.project_code + ' · period ' + p.summary.period_label + ' · issued by ' + p.summary.generated_by + ' on ' + (p.created_at | day)">
         <button actions class="btn btn-secondary" (click)="download('json')"><vc-icon name="file-json" />Package JSON</button>
         @if (p.pdf_file_id) { <button actions class="btn btn-secondary" (click)="download('pdf')"><vc-icon name="download" />PDF report</button> }
+        <button actions class="btn btn-secondary" [disabled]="annexBusy()" (click)="downloadAnnex()"><vc-icon name="download" />{{ annexBusy() ? 'Preparing…' : 'Strata & points annex (CSV)' }}</button>
       </vc-page-header>
 
       <div class="top">
@@ -62,13 +66,13 @@ import { Integrity, PACKAGE_SECTIONS, Package, VerifierAccess, VerifierQuery } f
         </section>
 
         <section class="card head">
-          <div class="hl"><span>Net credits</span><vc-dc cls="CALCULATED" /></div>
+          <div class="hl"><span>Verified Carbon Units</span><vc-dc cls="CALCULATED" /></div>
           <div class="hv num">{{ p.summary.net_credits_t_co2e | num: 1 }}<small>tCO₂e</small></div>
           <dl class="kv small">
-            <dt>Reductions</dt><dd class="num">{{ p.summary.reductions_t_co2e | num: 1 }} t</dd>
-            <dt>Removals</dt><dd class="num">{{ p.summary.removals_t_co2e | num: 1 }} t</dd>
-            <dt>Uncertainty deduction</dt><dd class="num">{{ p.summary.uncertainty_deduction_t_co2e | num: 1 }} t</dd>
-            <dt>Buffer</dt><dd class="num">{{ p.summary.buffer_t_co2e | num: 1 }} t</dd>
+            <dt>Reduction credits (VCU_ER)</dt><dd class="num">{{ p.summary.reductions_t_co2e | num: 1 }} t</dd>
+            <dt>Removal credits (VCU_CR)</dt><dd class="num">{{ p.summary.removals_t_co2e | num: 1 }} t</dd>
+            <dt>Effect of uncertainty</dt><dd class="num">{{ p.summary.uncertainty_deduction_t_co2e | num: 1 }} t</dd>
+            <dt>Buffer (stock changes)</dt><dd class="num">{{ p.summary.buffer_t_co2e | num: 1 }} t</dd>
           </dl>
           <a class="small" [routerLink]="['/app/calculations', p.run_id]">Open the calculation run →</a>
         </section>
@@ -80,6 +84,7 @@ import { Integrity, PACKAGE_SECTIONS, Package, VerifierAccess, VerifierQuery } f
         @case ('contents') {
           <section class="card">
             <div class="card-head"><h3>What the package contains</h3>
+              @if (schema()) { <span class="schema">{{ schema() }}</span> }
               <span class="subtle small">{{ p.summary.samples }} samples · {{ p.summary.lab_results }} lab results · {{ p.summary.documents }} referenced files</span>
             </div>
             @if (contentsError()) { <div class="card-body"><vc-error title="Couldn't read the package file" [message]="contentsError()!" /></div> }
@@ -87,13 +92,33 @@ import { Integrity, PACKAGE_SECTIONS, Package, VerifierAccess, VerifierQuery } f
               @for (s of sections; track s.key; let i = $index) {
                 <li>
                   <span class="sn num">{{ i + 1 }}</span>
-                  <div class="st"><strong>{{ s.label }}</strong><span>{{ s.text }}</span></div>
+                  <div class="st"><strong>{{ s.label }}@if (isV2(s.key)) { <span class="v2">VM0042 v2.2</span> }</strong><span>{{ s.text }}</span></div>
                   <span class="sc num">
-                    @if (sectionCounts(); as c) { {{ c[s.key] ?? '—' }} } @else { <span class="subtle">…</span> }
+                    @if (sectionCounts(); as c) {
+                      @if (c[s.key] === null || c[s.key] === undefined) { <span class="subtle small">Not in this version</span> }
+                      @else { {{ c[s.key] }} <span class="unit">{{ unit(s.key) }}</span> }
+                    } @else { <span class="subtle">…</span> }
                   </span>
                 </li>
               }
             </ol>
+          </section>
+        }
+
+        @case ('conformance') {
+          <section class="card">
+            <div class="card-head"><h3>VM0042 v2.2 conformance</h3><vc-dc cls="DERIVED" />
+              <span class="subtle small">Built from the sealed records when the package was issued. Each line cites the methodology section and page.</span></div>
+            @if (contentsError()) { <div class="card-body"><vc-error title="Couldn't read the package file" [message]="contentsError()!" /></div> }
+            @else if (!doc()) { <vc-loading [rows]="6" /> }
+            @else { <vc-conformance [items]="conformance()" /> }
+          </section>
+        }
+
+        @case ('equations') {
+          <section class="card">
+            <div class="card-head"><h3>Equation trail</h3><vc-dc cls="CALCULATED" /><span class="subtle small">As sealed in the package</span></div>
+            @if (!doc()) { <vc-loading [rows]="6" /> } @else { <vc-equation-trail [rows]="equations()" /> }
           </section>
         }
 
@@ -246,7 +271,10 @@ import { Integrity, PACKAGE_SECTIONS, Package, VerifierAccess, VerifierQuery } f
     .secs li{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--stone-100)}
     .sn{flex:none;width:24px;height:24px;border-radius:6px;background:var(--sand-100);display:grid;place-items:center;font-size:11.5px;color:var(--stone-600)}
     .st{flex:1;min-width:0;display:flex;flex-direction:column} .st strong{font-weight:500} .st span{font-size:12.5px;color:var(--text-2)}
-    .sc{font-weight:500;color:var(--stone-700)}
+    .sc{font-weight:500;color:var(--stone-700);white-space:nowrap}
+    .sc .unit{font-weight:400;font-size:12px;color:var(--text-3)}
+    .st .v2{margin-left:8px;font:600 10px var(--mono);letter-spacing:.04em;padding:1px 6px;border-radius:4px;background:var(--forest-100);color:var(--forest-700);vertical-align:1px}
+    .schema{font:500 11.5px var(--mono);padding:2px 8px;border-radius:5px;background:var(--sand-100);border:1px solid var(--border);color:var(--stone-600)}
     .dang{color:var(--red-600)}
     .dec{display:flex;margin-bottom:12px} .dq{margin-top:6px;color:var(--stone-700)}
     .qs{list-style:none;margin:0;padding:0}
@@ -276,14 +304,20 @@ export class PackageDetailPage {
   pkg = signal<Package | null>(null);
   loading = signal(true);
   error = signal<string | null>(null);
-  tab = signal('contents');
+  tab = signal(inject(ActivatedRoute).snapshot.queryParamMap.get('tab') ?? 'contents');
   sections = PACKAGE_SECTIONS;
 
   integrity = signal<Integrity | null>(null);
   integrityState = signal<'idle' | 'checking' | 'intact' | 'tampered'>('idle');
   checkedAt = signal<string | null>(null);
 
-  sectionCounts = signal<Record<string, number> | null>(null);
+  sectionCounts = signal<Record<string, number | null> | null>(null);
+  doc = signal<Record<string, unknown> | null>(null);
+  annexBusy = signal(false);
+  conformance = computed(() => (this.doc()?.['conformance'] as ConformanceItem[] | undefined) ?? []);
+  equations = computed(() => (this.doc()?.['equations'] as EquationRow[] | undefined) ?? []);
+  schema = computed(() => ((this.doc()?.['metadata'] as Record<string, unknown> | undefined)?.['schema'] as string | undefined) ?? '');
+  notMet = computed(() => this.conformance().filter(c => c.status === 'not_met').length);
   contentsError = signal<string | null>(null);
 
   access = signal<VerifierAccess[]>([]);
@@ -310,6 +344,8 @@ export class PackageDetailPage {
   openCount = computed(() => this.questions().filter(q => q.status === 'open').length);
   tabs = computed<TabItem[]>(() => [
     { key: 'contents', label: 'Contents' },
+    { key: 'conformance', label: 'VM0042 conformance', count: this.doc() ? this.notMet() || null : null },
+    { key: 'equations', label: 'Equations', count: this.doc() ? this.equations().length || null : null },
     { key: 'access', label: 'Verifier access', count: this.accessLoading() ? null : this.access().length },
     { key: 'queries', label: 'Queries', count: this.queriesLoading() ? null : this.openCount() },
   ]);
@@ -336,14 +372,10 @@ export class PackageDetailPage {
       next: async b => {
         try {
           const doc = JSON.parse(await b.text()) as Record<string, unknown>;
-          const c: Record<string, number> = {};
-          for (const s of PACKAGE_SECTIONS) {
-            const v = doc[s.key];
-            c[s.key] = Array.isArray(v) ? v.length : v && typeof v === 'object' ? Object.keys(v).length : 0;
-          }
-          const meth = doc['methodology'] as { rules?: unknown[] } | undefined;
-          if (meth?.rules) c['methodology'] = meth.rules.length;
+          const c: Record<string, number | null> = {};
+          for (const s of PACKAGE_SECTIONS) c[s.key] = sectionCount(doc, s.key);
           this.sectionCounts.set(c);
+          this.doc.set(doc);
         } catch {
           this.contentsError.set('The package file could not be parsed.');
         }
@@ -396,6 +428,19 @@ export class PackageDetailPage {
   private bearer(): Record<string, string> {
     const t = this.auth.token;
     return t ? { Authorization: `Bearer ${t}` } : {};
+  }
+
+  isV2(k: string) { return V2_SECTIONS.includes(k); }
+  unit(k: string) { return SECTION_UNIT[k] ?? ''; }
+
+  downloadAnnex() {
+    const p = this.pkg();
+    if (!p) return;
+    this.annexBusy.set(true);
+    this.api.blob(`/packages/${p.id}/annex.csv`).subscribe({
+      next: b => { this.annexBusy.set(false); saveBlob(b, `${p.summary.project_code}_${p.summary.period_label}_annex_v${p.version}.csv`); },
+      error: (e: ApiError) => { this.annexBusy.set(false); this.toast.apiError(e, "Couldn't download the annex"); },
+    });
   }
 
   linkTone(s: string) { return s === 'active' ? 'active' : s === 'revoked' ? 'rejected' : 'closed'; }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -36,6 +37,29 @@ def _bearer(request: Request) -> str:
     raise Unauthorized("Sign in to continue.")
 
 
+# A programme client (client_viewer) sees progress and results only. Fail closed: only these
+# read-only endpoints are reachable, none of which return farmer personal data.
+_CLIENT_VIEWER_ALLOWED = tuple(re.compile(p) for p in (
+    r"^/api/auth/(me|roles)$",
+    r"^/api/portfolio(/.*)?$",
+    r"^/api/programmes(/[0-9a-f-]{36}(/summary)?)?$",
+    r"^/api/projects(/[0-9a-f-]{36}(/(readiness|calculations|packages|qa/summary|risk/summary|forecast))?)?$",
+    r"^/api/calculations/[0-9a-f-]{36}$",
+    r"^/api/packages/[0-9a-f-]{36}(/verify)?$",
+    r"^/api/credit-batches(/[0-9a-f-]{36})?$",
+    r"^/api/sales/[0-9a-f-]{36}/report$",
+    r"^/api/(catalogue/.*|methodology/definitions)$",
+    # These endpoints mask farmer personal data themselves (portfolio/masking.py).
+    r"^/api/documents/retention$",
+    r"^/api/households/[0-9a-f-]{36}$",
+    r"^/api/projects/[0-9a-f-]{36}/interventions/compliance$",
+))
+
+
+def _client_viewer_allowed(request: Request) -> bool:
+    return request.method == "GET" and any(p.match(request.url.path) for p in _CLIENT_VIEWER_ALLOWED)
+
+
 def current_user(request: Request, db: Session = Depends(get_db)) -> CurrentUser:
     from app.modules.identity.models import User
 
@@ -43,6 +67,8 @@ def current_user(request: Request, db: Session = Depends(get_db)) -> CurrentUser
     user = db.get(User, uuid.UUID(payload["sub"]))
     if user is None or not user.is_active:
         raise Unauthorized("This account is not active.")
+    if user.role == "client_viewer" and not _client_viewer_allowed(request):
+        raise Forbidden("Client accounts can see programme progress and results only.")
     return CurrentUser(
         id=user.id,
         org_id=user.org_id,

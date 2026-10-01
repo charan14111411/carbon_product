@@ -80,6 +80,7 @@ export class AuthService {
   home(): string {
     const p = this.profile();
     if (!p) return '/login';
+    if (p.role === 'client_viewer') return '/app/portfolio';
     if (p.role === 'farmer') return '/farmer';
     if (p.role === 'buyer') return '/buyer';
     if (p.role === 'field_collector') return '/field';
@@ -145,6 +146,16 @@ export function permissionGuard(...perms: string[]): CanActivateFn {
     return auth.can(...perms) ? true : router.createUrlTree([auth.home()]);
   };
 }
+
+/** Route guard for internal MRV screens: signed-in staff with data.read; the read-only client, buyers and farmers go home. */
+export const staffGuard: CanActivateFn = () => {
+  const auth = inject(AuthService);
+  const router = inject(Router);
+  if (!auth.signedIn()) return router.createUrlTree(['/login']);
+  const role = auth.profile()?.role;
+  if (role === 'client_viewer' || role === 'buyer' || role === 'farmer' || !auth.can('data.read')) return router.createUrlTree([auth.home()]);
+  return true;
+};
 
 export async function bootstrapSession(auth: AuthService): Promise<void> {
   try {

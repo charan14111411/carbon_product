@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+Proficiency = Literal["NAPT", "GLOSOLAN", "other", "none"]
 
 
 class _In(BaseModel):
@@ -16,6 +19,9 @@ class LabIn(_In):
     accreditation_valid_until: date | None = None
     city: str = Field(default="", max_length=120)
     contact_email: str | None = Field(default=None, max_length=200)
+    iso17025: bool | None = None
+    proficiency_program: Proficiency | None = None
+    analytical_error_report_id: str | None = None
 
 
 class LabPatch(_In):
@@ -24,6 +30,18 @@ class LabPatch(_In):
     accreditation_valid_until: date | None = None
     city: str | None = Field(default=None, max_length=120)
     contact_email: str | None = Field(default=None, max_length=200)
+    iso17025: bool | None = None
+    proficiency_program: Proficiency | None = None
+    analytical_error_report_id: str | None = None
+
+
+class LabChangeIn(_In):
+    from_lab_id: str
+    to_lab_id: str
+    justification: str = Field(min_length=20, max_length=5000)
+    sop_consistency_statement: str = Field(min_length=20, max_length=5000)
+    evidence_ids: list[str] = Field(default_factory=list, max_length=20)
+    effective_from: date | None = None
 
 
 class BatchIn(_In):
@@ -44,6 +62,9 @@ class ResultIn(_In):
     method: str = Field(min_length=2, max_length=60)
     analysed_on: date
     uncertainty: float | None = Field(default=None, ge=0)
+    detection_limit: float | None = Field(default=None, ge=0)
+    method_justification: str | None = Field(default=None, max_length=5000)
+    purpose: Literal["primary", "spectroscopy_check"] = "primary"
     lab_id: str | None = None
     calibration_id: str | None = None
 
@@ -54,6 +75,8 @@ class ResultPatch(_In):
     method: str | None = Field(default=None, min_length=2, max_length=60)
     analysed_on: date | None = None
     uncertainty: float | None = Field(default=None, ge=0)
+    detection_limit: float | None = Field(default=None, ge=0)
+    method_justification: str | None = Field(default=None, max_length=5000)
     calibration_id: str | None = None
 
 
@@ -72,6 +95,8 @@ class SupersedeIn(_In):
     reason: str = Field(min_length=5, max_length=5000)
     unit: str | None = Field(default=None, min_length=1, max_length=20)
     uncertainty: float | None = Field(default=None, ge=0)
+    detection_limit: float | None = Field(default=None, ge=0)
+    method_justification: str | None = Field(default=None, max_length=5000)
     calibration_id: str | None = None
 
 
@@ -85,6 +110,12 @@ class CalibrationIn(_In):
     bias: float = 0.0
     valid_range: dict
     notes: str = Field(default="", max_length=5000)
+    rpiq: float | None = Field(default=None, gt=0)
+    lin_ccc: float | None = Field(default=None, ge=-1, le=1)
+    split_method: str | None = Field(default=None, min_length=3, max_length=120)
+    n_peer_reviewed_refs: int | None = Field(default=None, ge=0, le=1000)
+    spectral_range: str | None = Field(default=None, min_length=2, max_length=120)
+    instrument: str | None = Field(default=None, min_length=2, max_length=200)
 
 
 class CalibrationPatch(_In):
@@ -95,3 +126,9 @@ class CalibrationPatch(_In):
     bias: float | None = None
     valid_range: dict | None = None
     notes: str | None = Field(default=None, max_length=5000)
+    rpiq: float | None = Field(default=None, gt=0)
+    lin_ccc: float | None = Field(default=None, ge=-1, le=1)
+    split_method: str | None = Field(default=None, min_length=3, max_length=120)
+    n_peer_reviewed_refs: int | None = Field(default=None, ge=0, le=1000)
+    spectral_range: str | None = Field(default=None, min_length=2, max_length=120)
+    instrument: str | None = Field(default=None, min_length=2, max_length=200)

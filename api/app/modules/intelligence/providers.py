@@ -1,9 +1,22 @@
 """Satellite adapters.
 
-``SimulatedSentinel`` produces deterministic per-field NDVI / NDMI series (Sentinel-2-like,
+``SimulatedSentinel`` produces deterministic per-field NDVI / NDMI / NDWI series (Sentinel-2-like,
 5-day revisit) and land-surface temperature (Landsat-like, 8-day revisit). It knows nothing
 about what farmers reported: each field's behaviour comes from its own seed, so practice
 checks against simulated data are a realistic exercise, not a foregone conclusion.
+
+Indices (all OBSERVED except LAI):
+
+* NDVI = (NIR − Red) / (NIR + Red)            (Sentinel-2 B8, B4)
+* NDMI = (NIR − SWIR1) / (NIR + SWIR1)        (B8A, B11) – canopy water content
+* NDWI = (Green − NIR) / (Green + NIR)        (McFeeters 1996; B3, B8) – surface water / wetness;
+  negative over dense vegetation, positive over open water or flooded fields
+* LST  land-surface temperature, °C          (Landsat-like)
+* LAI  leaf-area index, m²/m² – **DERIVED** from NDVI by an empirical exponential relation
+  LAI = a · exp(b · NDVI) with a = 0.57, b = 2.33 (a published grassland/cropland fit, e.g. Fan et al.
+  2009), clipped to [0, 8]. The coefficients are generic; calibrate them locally before relying on
+  absolute LAI values. It is computed by the platform
+  from each pass's NDVI (``lai_from_ndvi``), so it works with any provider that supplies NDVI.
 
 Choose with ``VC_SATELLITE_PROVIDER`` (default ``simulated_sentinel``). To add a real
 provider (e.g. Sentinel Hub, Google Earth Engine) implement ``SatelliteProvider.indices``
@@ -26,6 +39,21 @@ PERENNIAL = {"coffee", "tea", "mango", "banana", "agroforestry", "sugarcane", "c
              "cocoa", "pepper", "cashew", "orchard", "citrus", "grapes"}
 
 
+INDICES = ("ndvi", "ndmi", "ndwi", "lst", "lai")
+INDEX_CLASSES = {"ndvi": "OBSERVED", "ndmi": "OBSERVED", "ndwi": "OBSERVED", "lst": "OBSERVED", "lai": "DERIVED"}
+LAI_A, LAI_B, LAI_MAX = 0.57, 2.33, 8.0
+LAI_METHOD = ("LAI = 0.57 · exp(2.33 · NDVI) (generic empirical fit), clipped to [0, 8]; derived from the same "
+              "pass's NDVI")
+
+
+def lai_from_ndvi(ndvi: float) -> float:
+    """Empirical leaf-area index from NDVI. Non-vegetated surfaces (NDVI ≤ 0) give ~0.57 by the formula,
+    so they are set to 0."""
+    if ndvi <= 0:
+        return 0.0
+    return round(min(LAI_MAX, LAI_A * math.exp(LAI_B * ndvi)), 4)
+
+
 @dataclass(frozen=True)
 class FieldRef:
     id: str
@@ -36,7 +64,7 @@ class FieldRef:
 
 @dataclass(frozen=True)
 class SatObs:
-    index_name: str  # ndvi | ndmi | lst
+    index_name: str  # ndvi | ndmi | ndwi | lst
     observed_on: date
     value: float
     cloud_pct: float
@@ -87,12 +115,16 @@ class SimulatedSentinel:
             cloud = 45 + 55 * uniform(f.id, "cloud", day) if cloudy else 30 * uniform(f.id, "cloud", day)
             ndvi = self._ndvi(f, day)
             ndmi = (ndvi - 0.25) * 0.8 + 0.15 * w + 0.02 * normal(f.id, "ndmi", day)
+            ndwi = -0.85 * ndvi + 0.05 + 0.12 * w + 0.02 * normal(f.id, "ndwi", day)
             if awd:
-                ndmi += 0.12 * math.sin(2 * math.pi * (day - self.EPOCH).days / 14)
+                wave = math.sin(2 * math.pi * (day - self.EPOCH).days / 14)
+                ndmi += 0.12 * wave
+                ndwi += 0.15 * max(0.0, wave)
             if cloudy:  # clouds depress optical indices; such passes are stored but excluded
-                ndvi, ndmi = ndvi * 0.4, ndmi * 0.4
+                ndvi, ndmi, ndwi = ndvi * 0.4, ndmi * 0.4, ndwi * 0.4
             out.append(SatObs("ndvi", day, round(ndvi, 4), round(cloud, 1), self.S2))
             out.append(SatObs("ndmi", day, round(ndmi, 4), round(cloud, 1), self.S2))
+            out.append(SatObs("ndwi", day, round(max(-1.0, min(1.0, ndwi)), 4), round(cloud, 1), self.S2))
             day += timedelta(days=5)
         day = start + timedelta(days=(3 - (start - self.EPOCH).days) % 8)
         while day <= end:

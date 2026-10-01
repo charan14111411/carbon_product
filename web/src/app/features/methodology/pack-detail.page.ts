@@ -10,7 +10,7 @@ import { Icon } from '../../ui/icon';
 import { Badge, Callout, DataClass, ErrorBox, Loading, Modal } from '../../ui/kit';
 import { CreatePack } from './create-pack';
 import {
-  Definitions, PackDetail, PackHead, PackRule, Readiness, RuleDefn, factorEntries, formatRuleValue, humanValue, isDemo,
+  Definitions, PackDetail, PackHead, PackRule, Readiness, RuleDefn, factorEntries, formatRuleValue, hasDefault, humanValue, isDemo,
 } from './methodology-data';
 import { RuleEditor } from './rule-editor';
 
@@ -39,6 +39,9 @@ interface ApproveProblem { code: string; message: string; labels: string[] }
           </div>
         </div>
         <div class="actions">
+          @if (editable() && defaultsCount()) {
+            <button class="btn btn-primary" (click)="openDefaults()"><vc-icon name="book" />Fill values fixed by VM0042 v2.2</button>
+          }
           @if (p.status === 'approved' && canAssign()) {
             <button class="btn btn-secondary" (click)="assignOpen.set(true)"><vc-icon name="briefcase" />Assign to project</button>
           }
@@ -55,6 +58,13 @@ interface ApproveProblem { code: string; message: string; labels: string[] }
         <vc-callout tone="danger" icon="alert" class="demo">
           <strong>Demonstration values.</strong> Some rules in this pack cite a <em>DEMO</em> source. They are placeholders for trying the platform —
           replace every one with the value from the published methodology, with its section and page, before any real calculation or credit issuance.
+        </vc-callout>
+      }
+      @if (p.warnings?.length) {
+        <vc-callout tone="warn" icon="alert" class="demo">
+          <strong>Conformance {{ p.warnings!.length === 1 ? 'warning' : 'warnings' }}.</strong>
+          @for (w of p.warnings!; track w.key) { <div class="wl">{{ w.message }}</div> }
+          <div class="small muted">These values are allowed, but every calculation and verification package that uses them will show the warning.</div>
         </vc-callout>
       }
       @if (p.status === 'approved') {
@@ -131,6 +141,18 @@ interface ApproveProblem { code: string; message: string; labels: string[] }
                       @else if (!r.def.required && !r.def.required_if && !r.rule) { <span class="optl">Optional</span> }
                     </div>
                     <p class="r-help">{{ r.def.help }}</p>
+                    @if (r.def.vm0042_ref || hasDefault(r.def)) {
+                      <div class="vmref">
+                        @if (r.def.vm0042_ref) { <span class="ref"><vc-icon name="book" [size]="11" />VM0042 {{ r.def.vm0042_ref }}</span> }
+                        @if (hasDefault(r.def)) {
+                          <span class="dflt">Methodology value <strong>{{ fmt(r.def.vm0042_default, r.def.kind, r.def.unit) }}</strong></span>
+                          @if (r.rule) {
+                            @if (matchesDefault(r)) { <span class="match"><vc-icon name="check" [size]="11" />Matches</span> }
+                            @else { <span class="differs"><vc-icon name="alert" [size]="11" />Differs from VM0042</span> }
+                          }
+                        } @else { <span class="own">Set by the methodology owner</span> }
+                      </div>
+                    }
                     @if (r.rule) {
                       <div class="r-src small">
                         <vc-icon name="book" [size]="12" />
@@ -148,7 +170,17 @@ interface ApproveProblem { code: string; message: string; labels: string[] }
                         @case ('list') { <div class="lst">@for (v of asList(r.rule.value); track v) { <span class="li">{{ human(v) }}</span> }</div> }
                         @case ('text') { <span class="txt">{{ r.rule.value }}</span> }
                         @case ('factors') {
-                          <div class="facs">@for (f of factors(r.rule.value); track f.key) { <span class="fc"><code>{{ f.key }}</code><span class="num">{{ f.value }}</span></span> }<span class="u">tCO₂e per unit</span></div>
+                          <div class="facs">
+                            @for (f of factors(r.rule.value).slice(0, 8); track f.key) {
+                              <span class="fc"><code>{{ f.key }}</code><span class="num">{{ f.value }}</span>@if (f.low !== null || f.high !== null) { <span class="rng num">{{ f.low ?? '—' }}–{{ f.high ?? '—' }}</span> }</span>
+                            }
+                            @if (factors(r.rule.value).length > 8) { <span class="u">+{{ factors(r.rule.value).length - 8 }} more</span> }
+                            <span class="u">{{ rangedCount(r.rule.value) }} of {{ factors(r.rule.value).length }} with a low–high range</span>
+                          </div>
+                        }
+                        @case ('choice') {
+                          <span class="v ch" [class.warnv]="isWarnChoice(r)">{{ fmt(r.rule.value, r.def.kind, '') }}</span>
+                          @if (isWarnChoice(r)) { <span class="wtag" title="Accepted with a warning">Warning</span> }
                         }
                         @default { <span class="v num">{{ fmt(r.rule.value, r.def.kind, '') }}</span>@if (r.def.unit) { <span class="u">{{ r.def.unit }}</span> } }
                       }
@@ -164,6 +196,40 @@ interface ApproveProblem { code: string; message: string; labels: string[] }
           </section>
         }
       }
+
+      <!-- VM0042 defaults -->
+      <vc-modal [(open)]="defaultsOpen" title="Fill values fixed by VM0042 v2.2" width="640px"
+        subtitle="Enters every rule whose value the methodology itself sets, citing the section and page.">
+        <p>VM0042 v2.2 fixes <strong>{{ defaultsCount() }}</strong> of the {{ allDefs().length }} rules — for example GWP values, the 66.7 % uncertainty confidence,
+          the ≥ 30 cm reporting depth and the 250 km control-site distance. They are entered with <em>{{ vmDoc() }}</em> as the source and the exact section and page.</p>
+        <p class="mt">Everything else — the non-permanence risk rating, the emission-factor table, the SOC approach, lab methods and all platform choices —
+          must still be entered by the methodology owner. A second person approves the pack as usual.</p>
+        <div class="dsum">
+          <div><strong class="num">{{ toFill().length }}</strong><span>will be filled</span></div>
+          <div><strong class="num">{{ differing().length }}</strong><span>already entered, differ</span></div>
+          <div><strong class="num">{{ matching().length }}</strong><span>already match</span></div>
+          <div><strong class="num">{{ allDefs().length - defaultsCount() }}</strong><span>left for the owner</span></div>
+        </div>
+        @if (toFill().length) {
+          <div class="dl"><div class="dlh">Will be filled</div>
+            @for (d of toFill(); track d.key) { <div class="dr"><span>{{ d.label }}</span><span class="num">{{ fmt(d.vm0042_default, d.kind, d.unit) }}</span><code>{{ d.vm0042_ref }}</code></div> }
+          </div>
+        }
+        @if (differing().length) {
+          <div class="dl"><div class="dlh">Entered with a different value</div>
+            @for (x of differing(); track x.def.key) { <div class="dr"><span>{{ x.def.label }}</span><span class="num">{{ fmt(x.rule.value, x.def.kind, x.def.unit) }} → {{ fmt(x.def.vm0042_default, x.def.kind, x.def.unit) }}</span><code>{{ x.def.vm0042_ref }}</code></div> }
+          </div>
+          <label class="checkbox ow"><input type="checkbox" [(ngModel)]="overwrite" />Replace these {{ differing().length }} entered value{{ differing().length === 1 ? '' : 's' }} with the VM0042 value</label>
+          @if (!overwrite) { <p class="small muted">Left unticked, values you already entered are kept.</p> }
+        }
+        @if (defaultsError()) { <vc-callout tone="danger" icon="alert" class="mt">{{ defaultsError() }}</vc-callout> }
+        <div footer class="ft">
+          <button class="btn btn-ghost" (click)="defaultsOpen.set(false)">Cancel</button>
+          <button class="btn btn-primary" [disabled]="busy() || (!toFill().length && !(overwrite && differing().length))" (click)="applyDefaults()">
+            {{ busy() ? 'Filling…' : 'Fill ' + (toFill().length + (overwrite ? differing().length : 0)) + ' rules' }}
+          </button>
+        </div>
+      </vc-modal>
 
       <vc-rule-editor [(open)]="editorOpen" [packId]="p.id" [def]="editing()" [rule]="editingRule()" [allDefs]="allDefs()" [defaultDoc]="commonDoc()" (saved)="onSaved($event)" />
 
@@ -286,6 +352,26 @@ interface ApproveProblem { code: string; message: string; labels: string[] }
     .lst{display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end}
     .li{font-size:12px;padding:2px 8px;border-radius:5px;background:var(--sand-100);border:1px solid var(--border)}
     .facs{display:flex;flex-direction:column;gap:3px;align-items:flex-end}
+    .rng{font-size:11px;color:var(--text-3);font-weight:400!important}
+    .vmref{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px}
+    .vmref > span{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;padding:2px 8px;border-radius:999px}
+    .ref{background:var(--dc-calculated-bg);color:var(--dc-calculated);font-family:var(--mono);font-size:11px!important}
+    .dflt{background:var(--sand-100);border:1px solid var(--border);color:var(--stone-700)}
+    .own{background:var(--stone-100);color:var(--stone-500)}
+    .match{background:var(--ok-soft);color:var(--forest-700)}
+    .differs{background:var(--warn-soft);color:var(--amber-600)}
+    .v.ch{font-size:14px}
+    .warnv{color:var(--amber-600)}
+    .wtag{font-size:11px;font-weight:600;padding:1px 7px;border-radius:999px;background:var(--amber-100);color:var(--amber-600)}
+    .wl{margin-top:2px}
+    .dsum{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;margin:16px 0;background:var(--border);border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden}
+    .dsum div{display:flex;flex-direction:column;padding:10px 12px;background:var(--surface-2)} .dsum strong{font-size:20px} .dsum span{font-size:12px;color:var(--text-2)}
+    .dl{border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:12px;max-height:220px;overflow:auto}
+    .dlh{position:sticky;top:0;font-size:11.5px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3);padding:8px 12px;background:var(--surface-2);border-bottom:1px solid var(--border)}
+    .dr{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr) auto;gap:10px;align-items:center;padding:7px 12px;border-bottom:1px solid var(--stone-100);font-size:13px}
+    .dr:last-child{border-bottom:0}
+    .dr code{font-size:10.5px;color:var(--text-3)}
+    .ow{margin:4px 0 6px}
     .fc{display:inline-flex;gap:8px;align-items:center;font-size:12px;padding:2px 8px;border-radius:5px;background:var(--sand-100);border:1px solid var(--border)}
     .fc code{font-size:11.5px;color:var(--stone-600)} .fc .num{font-weight:600}
     .txt{font-size:12.5px;color:var(--stone-700);text-align:right}
@@ -321,6 +407,18 @@ export class PackDetailPage {
   assignTo = signal('');
   assignError = signal<string | null>(null);
   revisionOpen = signal(false);
+  defaultsOpen = signal(false);
+  defaultsError = signal<string | null>(null);
+  overwrite = false;
+  hasDefault = hasDefault;
+  vmDoc = computed(() => this.defs()?.vm0042_document ?? 'Verra VM0042 v2.2 (21 Oct 2025)');
+  withDefaults = computed(() => this.allDefs().filter(d => hasDefault(d)));
+  defaultsCount = computed(() => this.defs()?.with_vm0042_default ?? this.withDefaults().length);
+  private byKey = computed(() => new Map((this.pack()?.rules ?? []).map(r => [r.key, r])));
+  toFill = computed(() => this.withDefaults().filter(d => !this.byKey().has(d.key)));
+  differing = computed(() => this.withDefaults().map(def => ({ def, rule: this.byKey().get(def.key)! }))
+    .filter(x => x.rule && JSON.stringify(x.rule.value) !== JSON.stringify(x.def.vm0042_default)));
+  matching = computed(() => this.withDefaults().filter(d => { const r = this.byKey().get(d.key); return r && JSON.stringify(r.value) === JSON.stringify(d.vm0042_default); }));
 
   editable = computed(() => this.pack()?.status === 'draft' && this.auth.can('rules.edit'));
   canAssign = computed(() => this.auth.can('rules.edit', 'programmes.manage'));
@@ -367,6 +465,34 @@ export class PackDetailPage {
   fmt = formatRuleValue;
   factors = factorEntries;
   asList(v: unknown): string[] { return Array.isArray(v) ? v.map(String) : [String(v)]; }
+  matchesDefault(r: { def: RuleDefn; rule: PackRule | null }) {
+    return r.rule?.matches_vm0042_default ?? JSON.stringify(r.rule?.value) === JSON.stringify(r.def.vm0042_default);
+  }
+  isWarnChoice(r: { def: RuleDefn; rule: PackRule | null }) { return typeof r.rule?.value === 'string' && (r.def.warning_choices ?? []).includes(r.rule.value); }
+  rangedCount(v: unknown) { return factorEntries(v).filter(f => f.low !== null || f.high !== null).length; }
+
+  openDefaults() {
+    this.overwrite = false;
+    this.defaultsError.set(null);
+    this.defaultsOpen.set(true);
+  }
+
+  applyDefaults() {
+    this.busy.set(true);
+    this.defaultsError.set(null);
+    this.api.post<PackDetail>(`/rule-packs/${this.id()}/apply-vm0042-defaults?overwrite=${this.overwrite}`).subscribe({
+      next: p => {
+        this.busy.set(false);
+        this.defaultsOpen.set(false);
+        this.pack.set(p);
+        this.loadReadiness();
+        const n = p.vm0042_defaults?.applied.length ?? 0;
+        this.toast.success(`${n} rule${n === 1 ? '' : 's'} filled from VM0042 v2.2`, `${p.vm0042_defaults?.left_for_owner.length ?? 0} rules remain for the methodology owner to enter.`);
+      },
+      error: (e: ApiError) => { this.busy.set(false); this.defaultsError.set(e.message); },
+    });
+  }
+
   isDemoSrc(r: PackRule) { return /demo/i.test(r.source_document ?? ''); }
 
   edit(d: RuleDefn) {

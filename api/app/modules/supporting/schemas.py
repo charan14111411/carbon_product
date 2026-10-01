@@ -73,3 +73,15 @@ class SyncIn(BaseModel):
         if (self.end - self.start).days + 1 > MAX_SYNC_DAYS:
             raise ValueError(f"Sync at most {MAX_SYNC_DAYS} days at a time.")
         return self
+
+
+class TerrainRefreshIn(BaseModel):
+    force: bool = False
+
+
+class SoilApplyIn(BaseModel):
+    suggestion_id: str
+    columns: list[Literal["soil_texture_class", "wrb_soil_group"]] = Field(
+        default_factory=lambda: ["soil_texture_class", "wrb_soil_group"], min_length=1)
+    overwrite: bool = False
+    note: str = Field(default="", max_length=2000)

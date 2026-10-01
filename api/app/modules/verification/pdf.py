@@ -36,8 +36,18 @@ def _styles() -> dict[str, ParagraphStyle]:
     }
 
 
+_GLYPHS = {"Δ": "d", "Σ": "Sum ", "²": "^2", "≥": ">=", "≤": "<=", "−": "-", "×": "x", "√": "sqrt ",
+           "π": "pi", "₂": "2", "₄": "4", "…": "...", "–": "-", "“": '"', "”": '"', "’": "'", "⁶": "^6", "—": "-", "°": "deg"}
+
+
+def _latin1(s: str) -> str:
+    """The standard PDF fonts cover Latin-1 only; spell out the maths symbols used in labels."""
+    out = "".join(_GLYPHS.get(ch, ch) for ch in s)
+    return out.encode("latin-1", "replace").decode("latin-1")
+
+
 def _esc(v: Any) -> str:
-    s = "" if v is None else str(v)
+    s = _latin1("" if v is None else str(v))
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
@@ -187,6 +197,53 @@ def render_pdf(pkg: dict[str, Any]) -> bytes:
         rows.append([t.get("term", "").replace("_", " "), _num(t.get("value_t_co2e")), _num(t.get("variance")),
                      t.get("source")])
     story.append(_table(rows, [width * 0.25, width * 0.17, width * 0.14, width * 0.44], st))
+
+    # ---------------------------------------------------------------- VM0042 v2.2 equations & vintages
+    eqs = pkg.get("equations") or results.get("equations") or []
+    if eqs:
+        story.append(Paragraph("Equation summary (VM0042 v2.2)", st["h2"]))
+        rows = [["Equation", "Quantity", "Value", "Unit"]]
+        for e in eqs:
+            rows.append([e.get("eq"), e.get("label"), _num(e.get("value"), 4), e.get("unit")])
+        story.append(_table(rows, [width * 0.14, width * 0.54, width * 0.17, width * 0.15], st))
+    vint = pkg.get("vintages") or results.get("vintages") or []
+    if vint:
+        story.append(Paragraph("Verified carbon units per vintage (Eq. 37–43, 75–79)", st["h2"]))
+        rows = [["Vintage", "ΣΔE", "ER", "CR", "Leakage", "Buffer", "VCU (ER)", "VCU (CR)", "VCU"]]
+        for v in vint:
+            rows.append([v.get("year"), _num(v.get("sum_delta_e_t_co2e")), _num(v.get("er_t_co2e")),
+                         _num(v.get("cr_t_co2e")), _num(v.get("leakage_t_co2e")),
+                         _num((v.get("buffer_er_t_co2e") or 0) + (v.get("buffer_cr_t_co2e") or 0)),
+                         _num(v.get("vcu_er")), _num(v.get("vcu_cr")), _num(v.get("vcu"))])
+        story.append(_table(rows, [width * 0.1] + [width * 0.1125] * 8, st))
+        story.append(Paragraph("All figures in t CO2e. The buffer applies to carbon-stock changes only.", st["small"]))
+    unc = pkg.get("uncertainty") or results.get("uncertainty") or {}
+    if unc:
+        story.append(Paragraph("Uncertainty by source (Eq. 70–74)", st["h2"]))
+        rows = [["Source", "Approach", "UNC %", "Note"]]
+        for k, u in unc.items():
+            if k == "qa3" and isinstance(u, dict):
+                for src, q in u.items():
+                    rows.append([src.replace("_", " "), "qa3", _num(q.get("unc_pct")),
+                                 f"{q.get('method')} — {q.get('ef_end')} end"])
+                continue
+            if isinstance(u, dict):
+                rows.append([k.replace("_", " "), u.get("approach", ""), _num(u.get("unc_pct")),
+                             u.get("method") or (f"t = {_num(u.get('t'), 4)}, df = {_num(u.get('df'), 1)}"
+                                                 if u.get("t") is not None else "")])
+        story.append(_table(rows, [width * 0.25, width * 0.12, width * 0.13, width * 0.5], st))
+    conf = pkg.get("conformance") or []
+    if conf:
+        story.append(Paragraph("Methodology conformance checklist", st["h2"]))
+        rows = [["Ref", "Requirement", "Status", "Evidence"]]
+        for c in conf:
+            rows.append([c.get("ref"), c.get("requirement"), c.get("status"), c.get("evidence")])
+        story.append(_table(rows, [width * 0.16, width * 0.36, width * 0.1, width * 0.38], st))
+    annex = pkg.get("annex") or {}
+    if annex:
+        story.append(Paragraph(
+            f"Strata annex: {len(annex.get('strata', []))} strata and {len(annex.get('points', []))} sampling points "
+            "with intended and actual coordinates are in the package JSON (also as CSV).", st["body"]))
 
     # ---------------------------------------------------------------- lab
     story.append(Paragraph("Laboratory summary", st["h2"]))

@@ -49,8 +49,8 @@ import { TermsTab } from './terms-tab';
                 <table class="table">
                   <thead><tr>
                     <th>Period</th><th>Status</th>
-                    <th class="num">Net credits</th><th class="num">Reductions</th><th class="num">Removals</th>
-                    <th class="num">Uncertainty deduction</th><th class="num">Buffer</th>
+                    <th class="num">VCUs</th><th class="num">VCU_ER</th><th class="num">VCU_CR</th>
+                    <th class="num">Uncertainty effect</th><th class="num">Buffer</th>
                     <th>Created by</th><th>Created</th><th></th>
                   </tr></thead>
                   <tbody>

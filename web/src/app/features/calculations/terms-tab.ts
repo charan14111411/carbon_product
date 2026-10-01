@@ -6,7 +6,7 @@ import { DayPipe, NumPipe } from '../../core/format';
 import { ToastService } from '../../core/toast.service';
 import { Badge, Callout, DataClass, Empty, ErrorBox, Loading, Modal } from '../../ui/kit';
 import { Icon } from '../../ui/icon';
-import { People, TERM_HELP, TERM_LABELS, Term, termLabel } from './calc.types';
+import { MANUAL_TERMS, People, TERM_HELP, Term, termLabel } from './calc.types';
 
 interface Group { period: string; rows: { current: Term; older: Term[] }[] }
 
@@ -192,7 +192,7 @@ export class TermsTab {
   formOpen = signal(false);
   saving = signal(false);
   formError = signal<string | null>(null);
-  termKeys = Object.keys(TERM_LABELS);
+  termKeys = MANUAL_TERMS;
   f = this.blank();
 
   canCreate = computed(() => this.auth.can('calc.run', 'rules.edit'));

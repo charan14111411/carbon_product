@@ -7,14 +7,15 @@ import { ToastService } from '../../core/toast.service';
 import { Icon } from '../../ui/icon';
 import { Badge, Callout, DataClass, FileDrop, Hash, Modal } from '../../ui/kit';
 import { LabContext } from './lab-context';
-import { ANALYTES, LabResult, MIR, analyteLabel } from './types';
+import { ANALYTES, LabResult, NOT_RECOMMENDED_METHODS, NOT_RECOMMENDED_NOTE, PURPOSES, SPECTRO_METHODS, analyteLabel } from './types';
+import { VmRef } from './vm-ref';
 
 type Action = 'accept' | 'reject' | 'void' | 'supersede' | null;
 
 /** One lab result: certificate, review decision, and corrections by supersession. */
 @Component({
   selector: 'vc-result-drawer',
-  imports: [FormsModule, Modal, Icon, Badge, Callout, DataClass, FileDrop, Hash, DayPipe, NumPipe, HumanPipe],
+  imports: [FormsModule, Modal, Icon, Badge, Callout, DataClass, FileDrop, Hash, DayPipe, NumPipe, HumanPipe, VmRef],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <vc-modal [open]="!!result()" (closed)="result.set(null)" [drawer]="true" width="560px"
@@ -30,6 +31,19 @@ type Action = 'accept' | 'reject' | 'void' | 'supersede' | null;
             </div>
           </div>
 
+          @if (r.below_detection_limit) {
+            <vc-callout tone="warn" icon="circle-alert">
+              <strong>Below the detection limit.</strong> {{ r.value | num: 3 }} {{ r.unit }} is under the lab's limit of detection
+              ({{ r.detection_limit | num: 3 }} {{ r.unit }}), so the value is uncertain. It is flagged in the quality checks. <vc-vm-ref ref="VM0042 §8.2.1.4 p.35-36" />
+            </vc-callout>
+          }
+          @if (!r.method_recommended) {
+            <vc-callout tone="warn" icon="alert">
+              <strong>{{ r.method | human }}</strong> — {{ notRecNote }} <vc-vm-ref ref="VM0042 §8.2.1.4 p.35" />
+              @if (r.method_justification) { <div class="note">Justification: “{{ r.method_justification }}”</div> }
+            </vc-callout>
+          }
+
           @if (frozen()) {
             <vc-callout tone="info" icon="lock">
               {{ r.status | human }} by {{ r.reviewed_by || 'a reviewer' }} on {{ r.reviewed_at | day: true }}. Its values can no longer change —
@@ -43,7 +57,9 @@ type Action = 'accept' | 'reject' | 'void' | 'supersede' | null;
             <dt>Lab</dt><dd>{{ ctx.labName(r.lab_id) }}</dd>
             <dt>Method</dt><dd>{{ r.method | human }}</dd>
             <dt>Analysed on</dt><dd>{{ r.analysed_on | day }}</dd>
+            <dt>Purpose</dt><dd>{{ purposeLabel() }}</dd>
             <dt>Uncertainty</dt><dd class="num">{{ r.uncertainty === null ? '—' : '± ' + (r.uncertainty | num: 3) + ' ' + r.unit }}</dd>
+            <dt>Detection limit</dt><dd class="num">{{ r.detection_limit === null ? '—' : (r.detection_limit | num: 3) + ' ' + r.unit }}@if (r.below_detection_limit) { &ngsp;<span class="bdl">below</span> }</dd>
             @if (r.calibration_id) { <dt>Calibration</dt><dd>{{ calibrationCode() }}</dd> }
             <dt>Entered by</dt><dd>{{ r.entered_by || '—' }}</dd>
           </dl>
@@ -130,7 +146,14 @@ type Action = 'accept' | 'reject' | 'void' | 'supersede' | null;
                   <input id="s-date" type="date" class="input" [(ngModel)]="sDate" [max]="today" /></div>
                 <div class="field"><label for="s-unc">Uncertainty <span class="subtle">(optional)</span></label>
                   <input id="s-unc" type="number" step="any" min="0" class="input num" [(ngModel)]="sUnc" /></div>
-                @if (sMethod === mir) {
+                <div class="field"><label for="s-dl">Detection limit <span class="subtle">(optional)</span></label>
+                  <input id="s-dl" type="number" step="any" min="0" class="input num" [(ngModel)]="sDl" /></div>
+                @if (isNotRec(sMethod)) {
+                  <div class="field span-2"><label for="s-just">Method justification <span class="req">*</span></label>
+                    <textarea id="s-just" class="input" rows="2" [(ngModel)]="sJust" placeholder="Why no other method is available."></textarea>
+                    <span class="hint">{{ notRecNote }} At least 20 characters.</span></div>
+                }
+                @if (isSpectro(sMethod)) {
                   <div class="field"><label for="s-cal">Calibration</label>
                     <select id="s-cal" class="input" [(ngModel)]="sCal">
                       <option value="">Choose…</option>
@@ -165,6 +188,8 @@ type Action = 'accept' | 'reject' | 'void' | 'supersede' | null;
     .up{display:flex;flex-direction:column;gap:10px;margin-top:10px;align-items:flex-start}
     .up vc-file-drop{width:100%}
     .acts{display:flex;gap:8px;flex-wrap:wrap}
+    .bdl{display:inline-flex;height:18px;align-items:center;padding:0 6px;border-radius:4px;background:var(--amber-100);color:var(--amber-600);font-size:11px;font-weight:500}
+    .req{color:var(--danger)}
   `],
 })
 export class ResultDrawer {
@@ -183,7 +208,7 @@ export class ResultDrawer {
   certFile = signal<File | null>(null);
   certSha = signal<string | null>(null);
   certName = signal<string | null>(null);
-  mir = MIR;
+  notRecNote = NOT_RECOMMENDED_NOTE;
   today = new Date().toISOString().slice(0, 10);
   note = '';
   sValue: number | null = null;
@@ -192,7 +217,12 @@ export class ResultDrawer {
   sDate = '';
   sUnc: number | null = null;
   sCal = '';
+  sDl: number | null = null;
+  sJust = '';
 
+  purposeLabel = computed(() => PURPOSES.find(p => p.key === this.r()?.purpose)?.label ?? 'Primary result');
+  isSpectro(m: string) { return SPECTRO_METHODS.has(m.trim()); }
+  isNotRec(m: string) { return NOT_RECOMMENDED_METHODS.has(m.trim()); }
   frozen = computed(() => !!this.r() && this.r()!.status !== 'pending');
   analyte = computed(() => analyteLabel(this.r()?.analyte ?? ''));
   methods = computed(() => ANALYTES.find(a => a.key === this.r()?.analyte)?.methods ?? []);
@@ -235,6 +265,7 @@ export class ResultDrawer {
     if (a === 'supersede') {
       this.sValue = r.value; this.sUnit = r.unit; this.sMethod = r.method; this.sDate = r.analysed_on;
       this.sUnc = r.uncertainty; this.sCal = r.calibration_id ?? '';
+      this.sDl = r.detection_limit; this.sJust = r.method_justification ?? '';
     }
     this.action.set(a);
   }
@@ -242,7 +273,10 @@ export class ResultDrawer {
   actionValid() {
     const a = this.action();
     if (a === 'accept') return true;
-    if (a === 'supersede') return this.sValue !== null && `${this.sValue}` !== '' && this.sMethod.trim().length >= 2 && !!this.sDate && this.note.trim().length >= 5;
+    if (a === 'supersede') {
+      return this.sValue !== null && `${this.sValue}` !== '' && this.sMethod.trim().length >= 2 && !!this.sDate && this.note.trim().length >= 5 &&
+        (!this.isNotRec(this.sMethod) || this.sJust.trim().length >= 20) && (!this.isSpectro(this.sMethod) || !!this.sCal);
+    }
     return this.note.trim().length >= 5;
   }
 
@@ -257,7 +291,9 @@ export class ResultDrawer {
       : this.api.post<LabResult>(`/lab-results/${r.id}/supersede`, {
           value: Number(this.sValue), method: this.sMethod.trim(), analysed_on: this.sDate, reason: this.note.trim(),
           unit: this.sUnit.trim() || null, uncertainty: this.sUnc === null || `${this.sUnc}` === '' ? null : Number(this.sUnc),
-          calibration_id: this.sMethod === MIR && this.sCal ? this.sCal : null,
+          detection_limit: this.sDl === null || `${this.sDl}` === '' ? null : Number(this.sDl),
+          method_justification: this.isNotRec(this.sMethod) ? this.sJust.trim() : null,
+          calibration_id: this.isSpectro(this.sMethod) && this.sCal ? this.sCal : null,
         });
     req.subscribe({
       next: res => {

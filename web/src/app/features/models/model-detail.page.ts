@@ -1,11 +1,13 @@
 import { ChangeDetectionStrategy, Component, computed, inject, input, signal, effect, untracked } from '@angular/core';
-import { RouterLink } from '@angular/router';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { catchError, forkJoin, of } from 'rxjs';
 import { ApiError, ApiService } from '../../core/api.service';
 import { AuthService } from '../../core/auth.service';
 import { DayPipe, NumPipe } from '../../core/format';
 import { ToastService } from '../../core/toast.service';
-import { KIT } from '../../ui/kit';
+import { KIT, TabItem } from '../../ui/kit';
+import { DriftPanel } from './drift.panel';
+import { InformingWall } from './informing-wall';
 import { Remote } from '../supporting/shared';
 import { ModelVersion, algorithmLabel, featureLabel, validationLabel } from './types';
 
@@ -13,7 +15,7 @@ interface UserLite { id: string; full_name: string; role_label: string }
 
 @Component({
   selector: 'vc-model-detail',
-  imports: [...KIT, RouterLink, NumPipe, DayPipe],
+  imports: [...KIT, RouterLink, NumPipe, DayPipe, DriftPanel, InformingWall],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <a routerLink="/app/models" class="back"><vc-icon name="arrow-left" [size]="14" />All models</a>
@@ -26,6 +28,7 @@ interface UserLite { id: string; full_name: string; role_label: string }
         <div actions class="row" style="--gap:8px">
           <vc-dc cls="MODELLED" />
           <vc-badge [status]="m.status" />
+          @if (m.review_required) { <vc-badge status="warning">Drift review needed</vc-badge> }
           @if (m.status === 'candidate' && canApprove()) {
             <button class="btn btn-primary" [disabled]="isAuthor()" [title]="isAuthor() ? 'You trained this model, so someone else must approve it' : ''" (click)="confirmOpen.set(true)">
               <vc-icon name="check-circle" />Approve model</button>
@@ -33,6 +36,13 @@ interface UserLite { id: string; full_name: string; role_label: string }
         </div>
       </vc-page-header>
 
+      <vc-informing-wall [reason]="m.credit_eligible === false ? m.credit_eligible_reason : ''" />
+
+      <vc-tabs [tabs]="tabs()" [(active)]="tab" />
+
+      @if (tab() === 'drift') {
+        <vc-drift-panel [model]="m" [name]="nameFn" (changed)="load(id(), true)" />
+      } @else {
       <div class="who card">
         <div><span class="k">Trained by</span><strong>{{ name(m.created_by) }}</strong><span class="subtle small">{{ m.created_at | day: true }}</span></div>
         <div><span class="k">Approved by</span>
@@ -107,6 +117,7 @@ interface UserLite { id: string; full_name: string; role_label: string }
           }
         </section>
       }
+      }
     }
 
     <vc-modal [(open)]="confirmOpen" title="Approve this model?" width="480px">
@@ -177,6 +188,15 @@ export class ModelDetailPage {
   });
   private maxFold = computed(() => Math.max(...(this.m()?.metrics.folds ?? []).map(f => f.rmse ?? 0), 1e-9));
 
+  private route = inject(ActivatedRoute);
+  private router = inject(Router);
+  tab = signal(this.route.snapshot.queryParamMap.get('tab') === 'drift' ? 'drift' : 'overview');
+  tabs = computed<TabItem[]>(() => [
+    { key: 'overview', label: 'Validation' },
+    { key: 'drift', label: this.m()?.review_required ? 'Drift · review needed' : 'Drift checks' },
+  ]);
+  nameFn = (id: string | null) => this.name(id);
+
   showAllEx = signal(false);
   confirmOpen = signal(false);
   approving = signal(false);
@@ -186,6 +206,10 @@ export class ModelDetailPage {
     effect(() => {
       const id = this.id();
       untracked(() => this.load(id));
+    });
+    effect(() => {
+      const t = this.tab();
+      untracked(() => this.router.navigate([], { queryParams: { tab: t === 'drift' ? 'drift' : null }, replaceUrl: true }));
     });
   }
 

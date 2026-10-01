@@ -65,11 +65,14 @@ def definitions() -> dict:
                 "key": r.key, "label": r.label, "kind": r.kind, "help": r.help, "required": r.required,
                 "required_if": ({"key": r.required_if[0], "equals": r.required_if[1]} if r.required_if else None),
                 "choices": list(r.choices), "unit": r.unit, "min": r.min, "max": r.max, "example": r.example,
+                "vm0042_ref": r.vm0042_ref or None, "vm0042_default": r.vm0042_default,
+                "warning_choices": list(r.warning_choices),
             }
             for r in defs.RULES if r.group == gkey
         ]
         groups.append({"key": gkey, "label": glabel, "rules": items})
-    return {"groups": groups, "total": len(defs.RULES)}
+    return {"groups": groups, "total": len(defs.RULES), "vm0042_document": defs.VM0042_DOCUMENT,
+            "with_vm0042_default": len(defs.WITH_VM0042_DEFAULT)}
 
 
 # ------------------------------------------------------------------ packs
@@ -153,6 +156,10 @@ def pack_detail(db: Session, user: CurrentUser, pack: RulePack) -> dict:
         items.append({
             "key": r.key,
             "label": d.label if d else r.key,
+            "vm0042_ref": d.vm0042_ref if d else None,
+            "vm0042_default": d.vm0042_default if d else None,
+            "matches_vm0042_default": (d is not None and d.vm0042_default is not None
+                                       and (r.value or {}).get("value") == d.vm0042_default),
             "kind": d.kind if d else "unknown",
             "group": d.group if d else None,
             "unit": d.unit if d else "",
@@ -169,7 +176,9 @@ def pack_detail(db: Session, user: CurrentUser, pack: RulePack) -> dict:
             "updated_at": r.updated_at.isoformat() if r.updated_at else None,
             "data_class": "RECORDED",
         })
-    return {**_pack_head(pack, names), "rules": items, "outstanding": defs.outstanding(values_of(rules))}
+    vals = values_of(rules)
+    return {**_pack_head(pack, names), "rules": items, "outstanding": defs.outstanding(vals),
+            "warnings": defs.warnings_for(vals)}
 
 
 def readiness(db: Session, pack: RulePack) -> dict:
@@ -297,3 +306,32 @@ def assign_to_project(db: Session, user: CurrentUser, project_id: str, pack_id: 
     audit(db, user, "project.assign_rule_pack", project, before=before)
     return {"project_id": str(project.id), "rule_pack_id": str(pack.id),
             "label": f"{pack.methodology_code} v{pack.methodology_version} rev {pack.revision}"}
+
+
+def apply_vm0042_defaults(db: Session, user: CurrentUser, pack: RulePack, *, overwrite: bool = False) -> dict:
+    """Enter every rule whose value VM0042 v2.2 itself fixes, citing the section and page.
+
+    Draft packs only. Rules the owner has already entered are kept unless ``overwrite``.
+    Rules without a methodology-fixed value (risk rating, emission factors, approach for SOC …)
+    are never touched. The pack still needs a second person to approve it."""
+    _ensure_draft(pack)
+    existing = {r.key: r for r in rules_of(db, pack)}
+    applied, kept = [], []
+    for d in defs.WITH_VM0042_DEFAULT:
+        cur = existing.get(d.key)
+        if cur is not None and not overwrite:
+            kept.append(d.key)
+            continue
+        if cur is not None and (cur.value or {}).get("value") == d.vm0042_default:
+            kept.append(d.key)
+            continue
+        section, page = d.ref_parts()
+        set_rule(db, user, pack, d.key, RuleValueIn(
+            value=d.vm0042_default, source_document=defs.VM0042_DOCUMENT, source_section=section,
+            source_page=page, notes="Value fixed by the methodology; entered with apply-vm0042-defaults.",
+        ))
+        applied.append(d.key)
+    db.flush()
+    audit(db, user, "rule_pack.apply_vm0042_defaults", pack, reason=f"{len(applied)} rule(s) entered")
+    return {"applied": applied, "kept": kept,
+            "left_for_owner": sorted(r.key for r in defs.RULES if r.vm0042_default is None)}

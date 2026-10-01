@@ -16,12 +16,16 @@ import { OverlapInfo, overlapOf } from './field-create';
 import { Crop, Farm, FarmerLite, FieldRec, Practice, PracticeType, cropColorMap, SOURCE_LABEL } from './field-data';
 import { LngLat, outerRing, selfIntersects, toPolygon } from './field-geo';
 import { LandUse } from './land-use';
+import { SiteCharacteristics } from './site-characteristics';
+import { TenurePanel } from './tenure';
+import { EligibilitySummary } from './eligibility-summary';
+import { Tenure, UserLite } from './site-data';
 
 @Component({
   selector: 'vc-field-detail',
   imports: [
     FormsModule, RouterLink, Icon, Badge, DataClass, Empty, ErrorBox, Loading, Modal, Tabs, Callout, FieldMap, Chip,
-    AttrInputs, BoundaryEditor, BoundaryHistory, LandUse, NumPipe, DayPipe, HumanPipe,
+    AttrInputs, BoundaryEditor, BoundaryHistory, LandUse, SiteCharacteristics, TenurePanel, EligibilitySummary, NumPipe, DayPipe, HumanPipe,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
@@ -94,11 +98,19 @@ import { LandUse } from './land-use';
         </section>
       </div>
 
+      <div class="mid">
+        <vc-site-characteristics [field]="f" (changed)="field.set($event)" />
+        <vc-eligibility-summary [fieldId]="f.id" [tenure]="tenure()" />
+      </div>
+
       <section class="card tabs-card">
         <div class="tabs-pad"><vc-tabs [tabs]="tabs()" [(active)]="tab" /></div>
         @switch (tab()) {
           @case ('boundary') { <vc-boundary-history [fieldId]="f.id" [refresh]="f.version" /> }
           @case ('land') { <vc-land-use [fieldId]="f.id" /> }
+          @case ('tenure') {
+            <vc-tenure [fieldId]="f.id" [farmerId]="farm()?.farmer_id ?? null" [farmerName]="farmer()?.full_name ?? ''" [users]="users()" (changed)="tenure.set($event)" />
+          }
           @case ('practices') {
             @if (practicesLoading()) { <vc-loading [rows]="4" /> }
             @else if (!practices().length) {
@@ -223,6 +235,8 @@ import { LandUse } from './land-use';
     .lk strong{font-weight:500;font-size:13.5px} .lk small{font-size:12px;color:var(--text-3)}
     .li-ic{display:grid;place-items:center;width:32px;height:32px;border-radius:8px;background:var(--sky-100);color:var(--sky-600)}
     .lk:nth-child(2) .li-ic{background:var(--violet-100);color:var(--violet-600)}
+    .mid{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(320px,1fr);gap:16px;margin-bottom:16px;align-items:start}
+    @media (max-width: 1100px){.mid{grid-template-columns:1fr}}
     .tabs-card{overflow:hidden}
     .tabs-pad{padding:4px 12px 0}
     .tabs-pad vc-tabs{margin-bottom:0;border-bottom:0}
@@ -239,6 +253,10 @@ export class FieldDetailPage {
   private toast = inject(ToastService);
   auth = inject(AuthService);
   id = input.required<string>();
+  /** Optional ?tab= deep link (boundary, land, tenure, practices). */
+  tabParam = input<string | undefined>(undefined, { alias: 'tab' });
+  users = signal<UserLite[]>([]);
+  tenure = signal<Tenure[] | null>(null);
 
   field = signal<FieldRec | null>(null);
   farm = signal<Farm | null>(null);
@@ -269,6 +287,7 @@ export class FieldDetailPage {
   tabs = computed(() => [
     { key: 'boundary', label: 'Boundary history', count: this.field()?.version ?? null },
     { key: 'land', label: 'Land-use history' },
+    { key: 'tenure', label: 'Land tenure', count: this.tenure()?.length ?? null },
     { key: 'practices', label: 'Practices', count: this.practicesLoading() ? null : this.practices().length },
   ]);
   mapData = computed<GeoJSON.FeatureCollection | null>(() => {
@@ -311,7 +330,9 @@ export class FieldDetailPage {
   constructor() {
     this.api.get<Crop[]>('/catalogue/crops', { include_inactive: true }).subscribe({ next: r => this.crops.set(r) });
     this.api.get<PracticeType[]>('/catalogue/practice-types', { include_inactive: true }).subscribe({ next: r => this.pts.set(r) });
+    this.api.get<UserLite[]>('/users').subscribe({ next: r => this.users.set(r), error: () => {} });
     effect(() => { const id = this.id(); untracked(() => this.load(id)); });
+    effect(() => { const t = this.tabParam(); if (t) untracked(() => this.tab.set(t)); });
   }
 
   load(id: string) {
@@ -331,6 +352,8 @@ export class FieldDetailPage {
       },
       error: (e: ApiError) => { this.error.set(e.message); this.loading.set(false); },
     });
+    this.tenure.set(null);
+    this.api.get<Tenure[]>(`/fields/${id}/tenure`).subscribe({ next: r => this.tenure.set(r), error: () => this.tenure.set([]) });
     this.practicesLoading.set(true);
     this.api.get<Page<Practice>>('/practices', { field_id: id, limit: 200 }).subscribe({
       next: r => { this.practices.set(r.items); this.practicesLoading.set(false); },

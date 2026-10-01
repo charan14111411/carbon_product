@@ -86,13 +86,23 @@ def test_run_is_calculated_from_database_and_is_deterministic(client, built, ana
     assert run["net_t_co2e"] > 0 and run["uncertainty_deduction_t_co2e"] > 0 and run["buffer_t_co2e"] > 0
     assert run["reductions_t_co2e"] + run["removals_t_co2e"] == pytest.approx(run["net_t_co2e"])
     res = run["results"]
-    assert res["strata"][0]["n_used"] == 5 and res["stock_method"] == "fixed_depth"
-    # 1.2 g/cm3 x 30 cm x 100 x (1 - 0.05) = 3420 t/ha fine soil
+    assert res["strata"][0]["n_used"] == 5 and res["stock_method"] == "esm" and res["soc_approach"] == "qa2"
+    # ESM reference = heaviest mass to 30 cm: 1.2 g/cm3 x 30 cm x 100 x (1 - 0.05) = 3420 t/ha fine soil
     first = res["strata"][0]["baseline_points"][0]
-    assert first["fine_mass_t_ha"] == pytest.approx(3420.0)
+    assert first["fine_mass_t_ha"] == pytest.approx(3420.0) and first["reference_mass_t_ha"] == pytest.approx(3420.0)
+    assert res["strata"][0]["control_code"] == "C1" and res["controls_used"] is True
     terms = {t["term"]: t for t in res["terms"]}
     assert terms["baseline_emissions"]["source"] == "not_required_by_rules"
+    assert terms["baseline_scenario"]["source"] == "measured_at_control_sites"
     assert terms["leakage"]["value_t_co2e"] == 0.2
+    # QA3 from activity data: diesel 120 L -> 80 L on 2 fields over 4 years (Eq. 7, EF 0.002886)
+    assert res["emissions"]["components"]["co2_fossil_fuel"] == pytest.approx(2 * 4 * 40 * 0.002886)
+    # Eq. 33: 2 fields x 2 t compost x 0.30 C x 0.12 x 44/12
+    assert res["leakage"]["le_oa_t_co2e"] == pytest.approx(2 * 2 * 0.3 * 0.12 * 44 / 12)
+    assert [v["year"] for v in res["vintages"]] == [2021, 2022, 2023, 2024]
+    assert sum(v["vcu"] for v in res["vintages"]) == pytest.approx(run["net_t_co2e"])
+    assert {e["eq"] for e in res["equations"]} >= {"Eq. 37", "Eq. 40", "Eq. 74", "Eq. 75", "Eq. 76", "Eq. 79"}
+    assert res["uncertainty"]["soc"]["unc_pct"] > 0
     again = _run(client, analyst, built).json()
     assert again["snapshot_sha256"] == run["snapshot_sha256"] and again["id"] != run["id"]
     listing = client.get(f"/api/projects/{built.project_id}/calculations", headers=analyst).json()
@@ -105,7 +115,7 @@ def test_provenance_tree(client, built, analyst):
     rid = _run(client, analyst, built).json()["id"]
     p = client.get(f"/api/calculations/{rid}/provenance", headers=analyst).json()
     assert any(r["key"] == "stock_method" and r["source"] for r in p["rules"])
-    assert {t["term"] for t in p["terms"]} == {"baseline_scenario", "project_emissions", "leakage"}
+    assert {t["term"] for t in p["terms"]} == {"leakage"}
     site = p["strata"][0]["sites"][0]
     assert len(site["samples"]) == 2
     smp = site["samples"][0]
@@ -134,7 +144,7 @@ def test_required_term_without_approval_is_refused(client, org, analyst):
     b = build_project(org, approve_terms=False)
     r = _run(client, analyst, b)
     assert r.status_code == 409 and r.json()["code"] == "RULE_MISSING"
-    assert r.json()["details"]["rule_key"] in ("baseline_scenario", "project_emissions", "leakage")
+    assert r.json()["details"]["rule_key"] == "leakage"
 
 
 def test_campaign_and_period_checks(client, built, analyst):
@@ -174,7 +184,10 @@ def test_negative_result_is_reported_not_floored(client, org, analyst):
     b = build_project(org, base_soc=(1.3, 1.25, 1.4, 1.35, 1.3), mon_soc=(1.1, 1.1, 1.2, 1.15, 1.12))
     run = _run(client, analyst, b).json()
     assert run["net_t_co2e"] < 0 and run["flags"]["carbon_lost"] is True
-    assert run["uncertainty_deduction_t_co2e"] == 0 and run["buffer_t_co2e"] == 0
+    # VM0042 Eq. 44/45: I_soil = -1, so the uncertainty makes the loss larger (a positive deduction); no buffer.
+    assert run["uncertainty_deduction_t_co2e"] > 0 and run["buffer_t_co2e"] == 0
+    assert run["results"]["uncertainty"]["soc"]["i_soil"] == -1
+    assert run["net_t_co2e"] < run["results"]["net_before_uncertainty_t_co2e"]
     with dbmod.session_factory()() as s:
         f = s.query(QAFinding).filter_by(entity_id=run["id"], rule_code="NET_RESULT_NOT_POSITIVE").one()
         assert f.severity == "info"
@@ -191,8 +204,10 @@ def test_workflow_approval_claims_and_events(client, built, analyst, manager):
     assert ok.status_code == 200 and ok.json()["status"] == "approved"
     with dbmod.session_factory()() as s:
         claims = s.query(Claim).filter_by(run_id=uuid.UUID(rid)).all()
-        assert sorted(str(c.field_id) for c in claims) == sorted(built.field_ids)
-        assert all(c.pool == "soc" for c in claims)
+        # one claim per credited pool: SOC plus the gases with emission reductions (fossil CO2, fertiliser N2O)
+        assert {c.pool for c in claims} == {"soc", "co2", "n2o"}
+        for pool in ("soc", "co2", "n2o"):
+            assert sorted(str(c.field_id) for c in claims if c.pool == pool) == sorted(built.field_ids)
         assert s.query(DomainEvent).filter_by(event="result.approved", entity_id=rid).count() == 1
     hist = client.get(f"/api/calculations/{rid}", headers=analyst).json()["status_history"]
     assert [h["status"] for h in hist] == ["calculated", "under_review", "approved"]
@@ -226,15 +241,15 @@ def test_second_approval_same_period_refused_then_superseded(client, built, anal
 
 def test_overlapping_claim_from_other_period_is_refused(client, built, analyst, manager):
     _approved_run(client, analyst, manager, built)
-    other = _run(client, analyst, built, period_label="P1b", start="2024-06-01", end="2025-06-01")
+    other = _run(client, analyst, built, period_label="P1b", start="2024-06-01", end="2024-12-31")
     # terms for P1b are not approved yet → fails closed
     assert other.status_code == 409 and other.json()["code"] == "RULE_MISSING"
     owner = login(client, make_user(built.org_id, "methodology_owner"))
-    for term in ("baseline_scenario", "project_emissions", "leakage"):
+    for term in ("leakage",):
         t = client.post(f"/api/projects/{built.project_id}/terms", headers=analyst, json={
             "period_label": "P1b", "term": term, "value_t_co2e": 0.1, "variance": 0, "source": "Project records"})
         client.post(f"/api/terms/{t.json()['id']}/approve", headers=owner)
-    rid = _run(client, analyst, built, period_label="P1b", start="2024-06-01", end="2025-06-01").json()["id"]
+    rid = _run(client, analyst, built, period_label="P1b", start="2024-06-01", end="2024-12-31").json()["id"]
     client.post(f"/api/calculations/{rid}/submit", headers=analyst)
     r = client.post(f"/api/calculations/{rid}/approve", headers=manager)
     assert r.status_code == 409 and r.json()["code"] == "CLAIM_OVERLAP"
@@ -284,13 +299,77 @@ def test_cross_org_is_not_found(client, built, analyst):
 def test_readiness(client, built, analyst, manager):
     r = client.get(f"/api/projects/{built.project_id}/readiness", headers=analyst).json()
     dims = {d["key"]: d for d in r["dimensions"]}
-    assert len(dims) == 13
+    assert len(dims) == 17
     for key in ("rules_approved", "fields_enrolled", "strata_defined", "sample_plans_approved",
                 "baseline_samples_collected", "lab_results_accepted", "certificates_attached", "custody_complete",
-                "open_blocking_qa", "monitoring_campaign", "terms_approved"):
+                "open_blocking_qa", "monitoring_campaign", "terms_approved", "activity_data_complete",
+                "control_sites"):
         assert dims[key]["status"] == "ok", (key, dims[key])
+    # no additionality assessment and no monitoring plan recorded for the built project
+    assert dims["additionality"]["status"] in ("warning", "blocking")
+    assert dims["monitoring_plan"]["status"] == "warning"
     assert dims["calculation_approved"]["status"] == "blocking"
     before = r["score_pct"]
     _approved_run(client, analyst, manager, built)
     after = client.get(f"/api/projects/{built.project_id}/readiness", headers=analyst).json()
     assert after["score_pct"] > before
+
+
+# ------------------------------------------------------------------ VM0042 v2.2 inputs and gates
+def test_eq3_core_mass_path_and_spectroscopy_checks_ignored(client, org, analyst):
+    b = build_project(org, eq3=True)
+    run = _run(client, analyst, b).json()
+    first = run["results"]["strata"][0]["baseline_points"][0]
+    assert first["layers"][0]["mass_method"] == "eq3"
+    assert first["layers"][0]["fine_mass_t_ha"] == pytest.approx(3420.0, rel=1e-4)
+    ref = _run(client, analyst, build_project(org)).json()
+    assert run["net_t_co2e"] == pytest.approx(ref["net_t_co2e"], rel=1e-4)
+    from app.modules.lab.models import LabResult
+
+    with dbmod.session_factory()() as s:
+        lr = s.query(LabResult).filter_by(layer_id=uuid.UUID(b.layer_ids[0]), analyte="soc_pct").one()
+        s.add(LabResult(org_id=lr.org_id, layer_id=lr.layer_id, lab_id=lr.lab_id, analyte="soc_pct", value=9.9,
+                        unit="%", method="dry_combustion", analysed_on=lr.analysed_on, status="accepted",
+                        version=99, purpose="spectroscopy_check", certificate_id=lr.certificate_id))
+        s.commit()
+    again = _run(client, analyst, b).json()
+    assert again["net_t_co2e"] == pytest.approx(run["net_t_co2e"])
+
+
+def test_gates_esm_increments_activity_data_and_control_sites(client, org, analyst, monkeypatch):
+    import app.modules.qa.service as qa_service
+
+    monkeypatch.setattr(qa_service, "run_project_checks", lambda *a, **k: None)  # test the calculation's own gates
+    one = _run(client, analyst, build_project(org, layers=1))
+    assert one.status_code == 409 and one.json()["code"] == "ESM_INCREMENTS_REQUIRED"
+    none = _run(client, analyst, build_project(org, activity=False))
+    assert none.status_code == 409 and none.json()["code"] == "ACTIVITY_DATA_MISSING"
+    no_ctrl = _run(client, analyst, build_project(org, controls=False))
+    assert no_ctrl.status_code == 409 and no_ctrl.json()["code"] == "CONTROL_SITES_REQUIRED"
+    few = _run(client, analyst, build_project(org, rules_over={"min_control_sites": 4}))
+    assert few.status_code == 409 and few.json()["code"] == "CONTROL_SITES_INSUFFICIENT"
+    far = _run(client, analyst, build_project(org, rules_over={"control_site_max_km": 1}))
+    assert far.status_code == 409 and far.json()["code"] == "CONTROL_SITE_TOO_FAR"
+    legacy = _run(client, analyst, build_project(org, rules_over={"stock_method": "fixed_depth"}))
+    assert legacy.status_code == 409 and legacy.json()["code"] == "ESM_REQUIRED"
+    qa1 = _run(client, analyst, build_project(org, rules_over={"qa_soc": "qa1"}))
+    assert qa1.status_code == 409 and qa1.json()["code"] == "MODELLED_DATA_NOT_PERMITTED"
+
+
+def test_later_period_uses_cumulative_indicator(client, org, analyst, manager):
+    b = build_project(org)
+    first = _approved_run(client, analyst, manager, b)
+    with dbmod.session_factory()() as s:
+        d_wp = s.get(CalculationRun, uuid.UUID(first)).results["soc"]["d_wp_t_co2e"]
+    from app.modules.calculation.models import TermEstimate
+
+    with dbmod.session_factory()() as s:
+        t = s.query(TermEstimate).filter_by(project_id=uuid.UUID(b.project_id)).first()
+        s.add(TermEstimate(org_id=t.org_id, project_id=t.project_id, period_label="P2", term="leakage",
+                           value_t_co2e=0.1, variance=0, source="Project records", status="approved",
+                           approved_by=t.approved_by))
+        s.commit()
+    later = _run(client, analyst, b, period_label="P2", start="2025-01-01", end="2025-12-31")
+    # the 2025 project year has no activity data yet, so the run fails closed rather than assume zero emissions
+    assert later.status_code == 409 and later.json()["code"] == "ACTIVITY_DATA_INCOMPLETE"
+    assert d_wp > 0

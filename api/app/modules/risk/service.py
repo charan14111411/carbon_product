@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import CurrentUser
 from app.core.db import utcnow
-from app.core.errors import Forbidden, IllegalTransition, NotFound, ValidationFailed
+from app.core.errors import Blocked, Forbidden, IllegalTransition, NotFound, ValidationFailed
 from app.core.permissions import P
 from app.core.tenancy import audit, get_owned, scoped, snapshot
 from app.modules.calculation.models import CalculationRun, RunStatusEvent
@@ -96,6 +96,13 @@ def move_risk(db: Session, user: CurrentUser, risk_id: str, status: str, note: s
             details={"from": r.status, "to": status, "allowed": [nxt] if nxt else []})
     if status == "resolved" and not (resolution or "").strip():
         raise ValidationFailed("Describe how the risk was resolved.", code="RESOLUTION_REQUIRED")
+    if status == "resolved":
+        from app.modules.risk.permanence import open_remediations
+
+        pending = open_remediations(db, r.id)
+        if pending:
+            raise Blocked(f"{pending} remediation action(s) are still open. Finish or cancel them first.",
+                          code="REMEDIATION_OPEN", details={"open_actions": pending})
     before = snapshot(r)
     r.status = status
     if resolution:

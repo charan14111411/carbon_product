@@ -11,13 +11,15 @@ import { Remote } from '../supporting/shared';
 import { EmissionsTab } from './emissions.tab';
 import { OptimiserTab } from './optimiser.tab';
 import { SocMapTab } from './soc-map.tab';
-import { FEATURES, ModelVersion, algorithmLabel, validationLabel } from './types';
+import { FeatureSetsTab } from './feature-sets.tab';
+import { InformingWall } from './informing-wall';
+import { FEATURES, FeatureSet, ModelVersion, algorithmLabel, validationLabel } from './types';
 
 interface NotEnough { rows: number; farms: number; min_rows: number; min_farms: number; excluded: { sample_code: string; missing_features: string[] }[] }
 
 @Component({
   selector: 'vc-models-page',
-  imports: [...KIT, FormsModule, RouterLink, NumPipe, DayPipe, AgoPipe, SocMapTab, OptimiserTab, EmissionsTab],
+  imports: [...KIT, FormsModule, RouterLink, NumPipe, DayPipe, AgoPipe, SocMapTab, OptimiserTab, EmissionsTab, FeatureSetsTab, InformingWall],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <vc-page-header title="Soil-carbon models" eyebrow="Intelligence"
@@ -27,11 +29,7 @@ interface NotEnough { rows: number; farms: number; min_rows: number; min_farms: 
       }
     </vc-page-header>
 
-    <vc-callout tone="warn" icon="info" class="mod-note">
-      <div class="row wrap" style="--gap:10px"><vc-dc cls="MODELLED" />
-        <span><strong>Modelled values support decisions; credits come only from lab results.</strong>
-        Predictions here are never used in a carbon calculation.</span></div>
-    </vc-callout>
+    <vc-informing-wall [reason]="wallReason()" />
 
     <vc-tabs [tabs]="tabs()" [(active)]="tab" />
 
@@ -58,8 +56,12 @@ interface NotEnough { rows: number; farms: number; min_rows: number; min_farms: 
                 <tbody>
                   @for (m of models.data(); track m.id) {
                     <tr class="clickable" [routerLink]="[m.id]">
-                      <td><div class="mn"><strong>{{ m.name }}</strong><span class="small subtle">Version {{ m.version }} · {{ m.features.length }} features</span></div></td>
-                      <td><vc-badge [status]="m.status" /></td>
+                      <td><div class="mn"><strong>{{ m.name }}</strong><span class="small subtle">Version {{ m.version }} · {{ m.features.length }} features@if (m.feature_set_id) { · feature set }</span></div></td>
+                      <td><div class="st"><vc-badge [status]="m.status" />
+                        @if (m.review_required) { <vc-badge status="warning">Review needed</vc-badge> }
+                        @else if (m.latest_drift?.status === 'drift') { <vc-badge status="failed">Drift</vc-badge> }
+                        @else if (m.latest_drift?.status === 'warning') { <vc-badge status="warning">Drift warning</vc-badge> }
+                      </div></td>
                       <td class="small">{{ alg(m.algorithm) }}</td>
                       <td class="small"><span class="hold"><vc-icon name="shield" [size]="13" />{{ val(m.validation, m.metrics.k) }}</span></td>
                       <td class="num">{{ m.training_rows ?? '—' }}</td>
@@ -78,6 +80,7 @@ interface NotEnough { rows: number; farms: number; min_rows: number; min_farms: 
           }
         </section>
       }
+      @case ('features') { <vc-feature-sets-tab [projectId]="ctx.currentId()" /> }
       @default {
         @if (ctx.currentId(); as pid) {
           @switch (tab()) {
@@ -100,16 +103,42 @@ interface NotEnough { rows: number; farms: number; min_rows: number; min_farms: 
           <span class="hint">Training again with the same name creates a new version.</span>
         </div>
         <div class="field">
-          <label>Features</label>
-          <div class="feats">
-            @for (f of features; track f.key) {
-              <label class="feat" [class.on]="tFeatures[f.key]">
-                <input type="checkbox" [name]="'f_' + f.key" [(ngModel)]="tFeatures[f.key]" />
-                <span><strong>{{ f.label }}</strong><small>{{ f.hint }}</small></span>
-              </label>
-            }
+          <label>Features from</label>
+          <div class="seg">
+            <button type="button" [class.on]="tSource() === 'builtin'" (click)="tSource.set('builtin')">Standard features</button>
+            <button type="button" [class.on]="tSource() === 'set'" (click)="tSource.set('set')">A feature set</button>
           </div>
         </div>
+        @if (tSource() === 'builtin') {
+          <div class="field">
+            <label>Features</label>
+            <div class="feats">
+              @for (f of features; track f.key) {
+                <label class="feat" [class.on]="tFeatures[f.key]">
+                  <input type="checkbox" [name]="'f_' + f.key" [(ngModel)]="tFeatures[f.key]" />
+                  <span><strong>{{ f.label }}</strong><small>{{ f.hint }}</small></span>
+                </label>
+              }
+            </div>
+          </div>
+        } @else {
+          <div class="field">
+            <label for="tfs">Feature set</label>
+            @if (fsets.loading()) { <vc-loading [rows]="1" /> }
+            @else if (fsets.error()) { <vc-error title="Couldn't load feature sets" [message]="fsets.error()!.message" /> }
+            @else if (!activeSets().length) {
+              <vc-callout tone="info" icon="blocks">No active feature sets yet. Create one on the <strong>Feature sets</strong> tab first.</vc-callout>
+            } @else {
+              <select id="tfs" class="input" name="tfs" [ngModel]="tSet()" (ngModelChange)="tSet.set($event)">
+                @for (f of activeSets(); track f.id) { <option [value]="f.id">{{ f.name }} v{{ f.version }} · {{ f.columns.length }} features</option> }
+              </select>
+              @if (pickedSet(); as ps) {
+                <div class="cols">@for (c of ps.columns; track c) { <code>{{ c }}</code> }</div>
+                <span class="hint">Each training sample gets these values as of its own collection date (point-in-time), with a fingerprint kept for audit.</span>
+              }
+            }
+          </div>
+        }
         <div class="form-grid">
           <div class="field">
             <label for="sc">Training data</label>
@@ -143,13 +172,18 @@ interface NotEnough { rows: number; farms: number; min_rows: number; min_farms: 
       </form>
       <ng-container footer>
         <button class="btn btn-ghost" type="button" (click)="trainOpen.set(false)">Cancel</button>
-        <button class="btn btn-primary" type="submit" form="trainForm" [disabled]="training() || !chosen().length || tName.trim().length < 2">
+        <button class="btn btn-primary" type="submit" form="trainForm" [disabled]="training() || !canSubmit() || tName.trim().length < 2">
           {{ training() ? 'Training…' : 'Train and validate' }}</button>
       </ng-container>
     </vc-modal>
   `,
   styles: [`
-    .mod-note{margin-bottom:20px}
+    .st{display:flex;gap:6px;flex-wrap:wrap}
+    .seg{display:inline-flex;background:var(--sand-100);border-radius:8px;padding:3px;gap:2px;align-self:flex-start}
+    .seg button{border:0;background:none;font:500 12.5px var(--font);padding:6px 12px;border-radius:6px;color:var(--stone-600);cursor:pointer}
+    .seg button.on{background:var(--surface);color:var(--stone-900);box-shadow:var(--shadow-sm)}
+    .cols{display:flex;flex-wrap:wrap;gap:4px;margin-top:8px}
+    .cols code{font-size:11.5px;padding:2px 6px;border-radius:4px;background:var(--sand-100);color:var(--stone-700)}
     .mn{display:flex;flex-direction:column;line-height:1.35}
     .u{font-size:11px;color:var(--text-3);margin-left:3px}
     .hold{display:inline-flex;align-items:center;gap:5px;color:var(--forest-700)}
@@ -182,7 +216,9 @@ export class ModelsPage {
     { key: 'map', label: 'Soil-carbon map' },
     { key: 'optimiser', label: 'Sampling optimiser' },
     { key: 'emissions', label: 'Emissions estimate' },
+    { key: 'features', label: 'Feature sets' },
   ]);
+  wallReason = computed(() => this.models.data()?.find(m => m.credit_eligible === false)?.credit_eligible_reason ?? '');
   features = FEATURES;
   alg = algorithmLabel;
   val = validationLabel;
@@ -196,9 +232,19 @@ export class ModelsPage {
   tLambda = 1;
   tFeatures: Record<string, boolean> = { ndvi_mean: true, rain_365d: true, elevation_m: true, clay_pct: true };
   chosen = () => FEATURES.filter(f => this.tFeatures[f.key]).map(f => f.key);
+  tSource = signal<'builtin' | 'set'>('builtin');
+  tSet = signal('');
+  fsets = new Remote<FeatureSet[]>();
+  activeSets = computed(() => (this.fsets.data() ?? []).filter(f => f.status === 'active'));
+  pickedSet = computed(() => this.activeSets().find(f => f.id === this.tSet()) ?? null);
+  canSubmit = () => (this.tSource() === 'builtin' ? this.chosen().length > 0 : !!this.pickedSet());
 
   constructor() {
     this.load();
+    effect(() => {
+      const act = this.activeSets();
+      untracked(() => { if (act.length && !act.some(f => f.id === this.tSet())) this.tSet.set(act[0].id); });
+    });
     effect(() => {
       const t = this.tab();
       untracked(() => this.router.navigate([], { queryParams: { tab: t === 'models' ? null : t }, replaceUrl: true }));
@@ -213,6 +259,7 @@ export class ModelsPage {
     this.trainError.set(null);
     this.notEnough.set(null);
     this.trainOpen.set(true);
+    this.fsets.load(this.api.get<FeatureSet[]>('/feature-sets'), true);
   }
 
   train() {
@@ -220,7 +267,8 @@ export class ModelsPage {
     this.trainError.set(null);
     this.notEnough.set(null);
     this.api.post<ModelVersion>('/models/soc/train', {
-      name: this.tName.trim(), features: this.chosen(), ridge_lambda: Number(this.tLambda) || 1,
+      name: this.tName.trim(), ridge_lambda: Number(this.tLambda) || 1,
+      ...(this.tSource() === 'set' ? { feature_set_id: this.tSet(), features: [] } : { features: this.chosen() }),
       project_id: this.tScope === 'project' ? this.ctx.currentId() : null,
     }).subscribe({
       next: m => {

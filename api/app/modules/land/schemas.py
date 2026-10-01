@@ -6,7 +6,13 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-LandUse = Literal["cropland", "grassland", "forest", "wetland", "settlement", "other"]
+from app.modules.land.domain import (
+    IPCC_CLIMATE_ZONES, TEXTURE_CLASSES, WRB_SOIL_GROUPS, normalise_code, slope_class,
+)
+
+LandUse = Literal["cropland", "grassland", "native_grassland", "forest", "wetland", "settlement", "other"]
+LandCover = Literal["cropland", "grassland", "wetland", "other"]
+TenureKind = Literal["owned", "leased", "shared", "community", "other"]
 FieldStatus = Literal["active", "retired"]
 
 
@@ -50,7 +56,53 @@ class FarmOut(OrmOut):
 
 
 # ------------------------------------------------------------------ fields
-class FieldIn(BaseModel):
+_WRB = {g.lower(): g for g in WRB_SOIL_GROUPS}
+
+
+class SiteAttributes(BaseModel):
+    """VM0042 v2.2 Table 7 / Appendix 5 attributes used for applicability, stratification and control sites."""
+
+    slope_pct: float | None = Field(default=None, ge=0, le=300)
+    aspect_deg: float | None = Field(default=None, ge=0, lt=360)
+    soil_texture_class: str | None = None
+    wrb_soil_group: str | None = None
+    ecoregion: str | None = Field(default=None, min_length=2, max_length=120)
+    climate_zone: str | None = None
+    mean_annual_precip_mm: float | None = Field(default=None, ge=0, le=15000)
+
+    @field_validator("soil_texture_class")
+    @classmethod
+    def _texture(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        code = normalise_code(v)
+        if code not in TEXTURE_CLASSES:
+            raise ValueError(f"Use a textural class: {', '.join(TEXTURE_CLASSES)}.")
+        return code
+
+    @field_validator("wrb_soil_group")
+    @classmethod
+    def _wrb(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        key = v.strip().lower()
+        key = key if key in _WRB else f"{key}s" if f"{key}s" in _WRB else key
+        if key not in _WRB:
+            raise ValueError("Use a WRB reference soil group, e.g. Ferralsols, Nitisols, Vertisols.")
+        return _WRB[key]
+
+    @field_validator("climate_zone")
+    @classmethod
+    def _climate(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        code = normalise_code(v)
+        if code not in IPCC_CLIMATE_ZONES:
+            raise ValueError(f"Use an IPCC climate zone: {', '.join(IPCC_CLIMATE_ZONES)}.")
+        return code
+
+
+class FieldIn(SiteAttributes):
     farm_id: str
     name: str = Field(min_length=1, max_length=200)
     boundary: dict
@@ -58,9 +110,10 @@ class FieldIn(BaseModel):
     crop_attributes: dict = Field(default_factory=dict)
     soil_type: str | None = Field(default=None, max_length=80)
     elevation_m: float | None = Field(default=None, ge=-500, le=9000)
+    land_cover: LandCover = "cropland"
 
 
-class FieldPatch(BaseModel):
+class FieldPatch(SiteAttributes):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     boundary: dict | None = None
     reason: str | None = Field(default=None, max_length=2000)  # required when the boundary changes
@@ -68,6 +121,7 @@ class FieldPatch(BaseModel):
     crop_attributes: dict | None = None
     soil_type: str | None = Field(default=None, max_length=80)
     elevation_m: float | None = Field(default=None, ge=-500, le=9000)
+    land_cover: LandCover | None = None
     status: FieldStatus | None = None
 
 
@@ -84,11 +138,25 @@ class FieldOut(OrmOut):
     crop_attributes: dict
     soil_type: str | None
     elevation_m: float | None
+    slope_pct: float | None = None
+    aspect_deg: float | None = None
+    soil_texture_class: str | None = None
+    wrb_soil_group: str | None = None
+    ecoregion: str | None = None
+    climate_zone: str | None = None
+    mean_annual_precip_mm: float | None = None
+    land_cover: str = "cropland"
+    slope_class: str | None = None  # VM0042 Appendix 5 Table 10, derived from slope_pct
     version: int
     status: str
     created_at: datetime
     updated_at: datetime
     data_class: str = "CALCULATED"  # area is computed from the boundary
+
+    @model_validator(mode="after")
+    def _slope_class(self) -> "FieldOut":
+        self.slope_class = slope_class(self.slope_pct)
+        return self
 
 
 class FieldPage(BaseModel):
@@ -174,3 +242,51 @@ class EnrolmentOut(BaseModel):
     withdrawn_on: date | None
     created_at: datetime
     updated_at: datetime
+
+
+# ------------------------------------------------------------------ land tenure
+class TenureIn(BaseModel):
+    holder_farmer_id: str
+    kind: TenureKind
+    document_evidence_ids: list[str] = Field(min_length=1, max_length=50)
+    valid_from: date
+    valid_to: date | None = None
+    notes: str = Field(default="", max_length=4000)
+
+    @model_validator(mode="after")
+    def _check(self) -> "TenureIn":
+        if self.valid_to is not None and self.valid_to < self.valid_from:
+            raise ValueError("The end date can't be before the start date.")
+        if self.kind == "other" and len(self.notes.strip()) < 5:
+            raise ValueError("Describe the arrangement in the notes when the tenure kind is 'other'.")
+        return self
+
+
+class TenureVerifyIn(BaseModel):
+    decision: Literal["verified", "rejected"]
+    note: str = Field(default="", max_length=4000)
+
+    @model_validator(mode="after")
+    def _note(self) -> "TenureVerifyIn":
+        if self.decision == "rejected" and len(self.note.strip()) < 5:
+            raise ValueError("Say why the tenure is rejected (at least 5 characters).")
+        return self
+
+
+class TenureOut(OrmOut):
+    id: str
+    field_id: str
+    holder_farmer_id: str
+    kind: str
+    document_evidence_ids: list[str]
+    valid_from: date
+    valid_to: date | None
+    notes: str
+    status: str
+    verified_by: str | None
+    verified_at: datetime | None
+    review_note: str
+    created_by: str | None
+    created_at: datetime
+    updated_at: datetime
+    data_class: str = "RECORDED"

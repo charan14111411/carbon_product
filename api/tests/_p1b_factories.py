@@ -21,10 +21,24 @@ from tests.conftest import login, make_user
 
 BASE_LAT, BASE_LON = 12.42, 75.74
 
+# VM0042 v2.2 thresholds read by the sampling / lab / QA checks that are not (yet) rule definitions in
+# methodology/definitions.py, so a test pack adds them explicitly. Values the definitions already give an
+# example for (ship_within_days, storage_max_days, remeasure_max_years, min_composites_per_stratum,
+# spectroscopy_check_fraction_min, stock_depth_cm) take precedence. Sources: docs/VM0042_v2.2_REQUIREMENTS.md.
+VM0042_EXTRA = {
+    "resample_min_depth_increments": 2,    # §8.2.1.3 (7) p.32
+    "min_composites_per_stratum": 3,       # §8.2.1.2 p.30
+    "ship_within_days": 5,                 # §8.2.1.3 (5) p.32
+    "storage_max_days": 90,                # §8.2.1.3 (5) p.32
+    "remeasure_max_years": 5,              # §8.1 p.20
+    "spectroscopy_check_fraction_min": 0.10,  # §8.6.2.1 p.78
+    "spectroscopy_check_fraction_max": 0.15,
+}
+
 
 def full_values(**overrides) -> dict:
     """Example value for every rule definition (what a real scientist would enter), with overrides."""
-    vals = {r.key: r.example for r in RULES if r.example is not None}
+    vals = {**VM0042_EXTRA, **{r.key: r.example for r in RULES if r.example is not None}}
     vals["stock_method"] = "fixed_depth"
     vals.pop("esm_reference_mass_t_ha", None)
     vals.update(overrides)
@@ -116,7 +130,7 @@ class Flow:
     # -- setup steps
     def stratum(self, code: str = "A", field_ids: list[str] | None = None, **kw) -> dict:
         body = {"code": code, "name": f"Zone {code}", "field_ids": field_ids or self.p["field_ids"],
-                "effective_from": "2024-01-01", **kw}
+                "effective_from": "2024-01-01", "criteria": {"soil_type": "red", "crop": "maize"}, **kw}
         r = self.c.post(f"/api/projects/{self.pid}/strata", headers=self.planner, json=body)
         assert r.status_code == 201, r.text
         return r.json()
@@ -174,7 +188,7 @@ class Flow:
             "layers": [{"depth_from_cm": 0, "depth_to_cm": 15, "label_qr": f"QR-{tag}-1"},
                        {"depth_from_cm": 15, "depth_to_cm": 30, "label_qr": f"QR-{tag}-2"}],
             "photo_ids": kw.pop("photo_ids", None) if "photo_ids" in kw else self.photos(3),
-            "device_id": "tablet-7",
+            "device_id": "tablet-7", "probe_diameter_mm": 50, "cores_composited": 5,
         }
         body.update(kw)
         return body

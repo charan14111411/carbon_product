@@ -74,6 +74,14 @@ def delete_rule(
     return service.pack_detail(db, user, pack)
 
 
+@router.post("/rule-packs/{pack_id}/apply-vm0042-defaults")
+def apply_vm0042_defaults(pack_id: str, overwrite: bool = False, user: CurrentUser = Depends(require(P.EDIT_RULES)),
+                          db: Session = Depends(get_db)):
+    pack = _pack(db, user, pack_id)
+    summary = service.apply_vm0042_defaults(db, user, pack, overwrite=overwrite)
+    return {**service.pack_detail(db, user, pack), "vm0042_defaults": summary}
+
+
 @router.post("/rule-packs/{pack_id}/approve")
 def approve(pack_id: str, user: CurrentUser = Depends(require(P.APPROVE_RULES)), db: Session = Depends(get_db)):
     pack = service.approve(db, user, _pack(db, user, pack_id))

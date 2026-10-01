@@ -44,10 +44,11 @@ from app.modules.practices.models import PracticeRecord
 from app.modules.programmes.models import Programme, Project
 from app.modules.qa.models import QAFinding
 from app.modules.sampling.models import Campaign, CustodyEvent, Sample, Site, SoilLayer, Stratum
+from app.modules.verification import sections
 from app.modules.verification.models import VerificationPackage, VerifierAccess, VerifierQuery
 from app.modules.verification.schemas import DecisionIn, VerifierAccessIn, VerifierQueryIn
 
-PACKAGE_SCHEMA = "vcarbon.verification-package/1"
+PACKAGE_SCHEMA = "vcarbon.verification-package/2"  # /2: VM0042 v2.2 sections
 _VOLATILE = ("updated_at",)
 
 
@@ -197,6 +198,21 @@ def build_package(db: Session, run: CalculationRun, *, version: int, generated_b
                 "by_id": str(e.created_by) if e.created_by else None}
                for e in calc.status_events(db, run.id)]
 
+    # VM0042 v2.2 sections
+    activity = sections.activity_section(db, run, _row)
+    for r in activity["records"]:
+        for e in r.get("evidence_ids") or []:
+            ref(e, f"activity:{r['id']}")
+        ref(r.get("attestation_id"), f"activity:{r['id']}")
+    supporting = sections.supporting_section(db, run, [f.id for f in fields])
+    readiness_dims = {}
+    if project is not None:
+        readiness_dims = {
+            "additionality": calc._table_dimension(db, project, "additionality_assessments", "additionality",
+                                                   "Additionality", "")["status"],
+            "monitoring_plan": calc._monitoring_plan_dimension(db, project)["status"],
+        }
+
     # document index
     evid = db.scalars(select(EvidenceFile).where(EvidenceFile.org_id == org, EvidenceFile.id.in_(list(docs)))).all() \
         if docs else []
@@ -225,7 +241,10 @@ def build_package(db: Session, run: CalculationRun, *, version: int, generated_b
         "methodology": methodology,
         "fields": [
             {"id": str(f.id), "code": f.code, "name": f.name, "area_ha": f.area_ha, "boundary": f.boundary,
-             "crop_code": f.crop_code, "soil_type": f.soil_type, "version": f.version, "status": f.status}
+             "crop_code": f.crop_code, "soil_type": f.soil_type, "version": f.version, "status": f.status,
+             "land_cover": f.land_cover, "climate_zone": f.climate_zone, "wrb_soil_group": f.wrb_soil_group,
+             "soil_texture_class": f.soil_texture_class, "mean_annual_precip_mm": f.mean_annual_precip_mm,
+             "centroid_lat": f.centroid_lat, "centroid_lon": f.centroid_lon}
             for f in fields
         ],
         "enrolments": [_row(e) for e in enrolments],
@@ -254,8 +273,18 @@ def build_package(db: Session, run: CalculationRun, *, version: int, generated_b
             },
         },
         "qa_findings": [_row(f) for f in findings],
+        "activity_data": activity,
+        "emissions": results.get("emissions"),
+        "leakage": results.get("leakage"),
+        "uncertainty": results.get("uncertainty"),
+        "vintages": results.get("vintages", []),
+        "equations": results.get("equations", []),
+        "supporting_data": supporting,
         "document_index": index,
     }
+    pkg["annex"] = sections.annex_section(pkg, run)
+    pkg["conformance"] = sections.conformance(pkg, run, {"annex": pkg["annex"], "activity_data": activity,
+                                                          "readiness": readiness_dims})
     pkg["metadata"]["content_sha256"] = content_sha256(pkg)
     pkg["metadata"]["sha256"] = package_sha256(pkg)
     return pkg
@@ -316,6 +345,14 @@ def list_packages(db: Session, user: CurrentUser, project_id: str) -> list[Verif
     project = get_owned(db, Project, project_id, user, "Project")
     return list(db.scalars(scoped(VerificationPackage, user).where(VerificationPackage.project_id == project.id)
                            .order_by(VerificationPackage.created_at.desc())).all())
+
+
+def annex_csv(db: Session, vp: VerificationPackage) -> str:
+    """§8.2.1.2 spreadsheet annex (strata, areas, points with intended vs actual coordinates)."""
+    pkg = load_json(db, vp)
+    if "annex" not in pkg:
+        raise NotFound("This package was issued before the strata annex existed. Issue a new version.")
+    return sections.annex_csv(pkg["annex"])
 
 
 def load_json(db: Session, vp: VerificationPackage) -> dict[str, Any]:

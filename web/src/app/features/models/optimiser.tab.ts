@@ -6,6 +6,7 @@ import { KIT } from '../../ui/kit';
 import { Remote } from '../supporting/shared';
 import { TierChip } from '../supporting/tier-chip';
 import { humanReason } from './types';
+import { WallChip } from './informing-wall';
 
 interface Rec {
   field_id: string; field_code: string; priority: number; predicted_soc_pct: number | null; supporting_tier: number;
@@ -14,12 +15,12 @@ interface Rec {
 interface Optimiser {
   project_id: string; budget: number; soc_map_id: string; data_class: string; recommendations: Rec[];
   per_stratum: { stratum: string; fields: number; suggested_samples: number; extra_samples: number }[];
-  total_suggested_samples: number;
+  total_suggested_samples: number; credit_eligible?: boolean; credit_eligible_reason?: string;
 }
 
 @Component({
   selector: 'vc-optimiser-tab',
-  imports: [...KIT, FormsModule, NumPipe, TierChip],
+  imports: [...KIT, FormsModule, NumPipe, TierChip, WallChip],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <section class="card budget">
@@ -51,7 +52,7 @@ interface Optimiser {
 
       <div class="grid split">
         <section class="card">
-          <div class="card-head"><h3>Ranked recommendations</h3><vc-dc cls="MODELLED" />@if (opt.loading()) { <span class="small subtle">Updating…</span> }</div>
+          <div class="card-head"><h3>Ranked recommendations</h3><vc-dc cls="MODELLED" />@if (opt.loading()) { <span class="small subtle">Updating…</span> }<span class="spacer"></span><vc-wall-chip [data]="o" /></div>
           @if (!o.recommendations.length) {
             <vc-empty icon="target" title="No fields to recommend" text="The latest map has no fields that belong to this project." />
           } @else {

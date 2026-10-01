@@ -24,14 +24,42 @@ const PHOTO_KINDS: { kind: QueuedPhoto['kind']; label: string; hint: string }[] 
 ];
 
 interface Layer { from: number; to: number; label: string }
+type DepthLimit = 'bedrock' | 'hardpan' | 'stones' | 'other';
+const DEPTH_LIMITS: { key: DepthLimit; label: string; hint: string }[] = [
+  { key: 'bedrock', label: 'Bedrock', hint: 'Solid rock below the soil' },
+  { key: 'hardpan', label: 'Hardpan', hint: 'Cemented layer the probe cannot pass' },
+  { key: 'stones', label: 'Stones', hint: 'Loose stones or gravel blocked the probe' },
+  { key: 'other', label: 'Other', hint: 'Water table, roots, or something else' },
+];
+/** Depth-increment boundaries used for default bags (cm). VM0042 re-sampling needs at least 2 increments. */
+const STD_CUTS = [0, 10, 20, 30, 50, 75, 100, 150, 200, 300];
+const PROBE_KEY = 'vc.field.probeMm';
+const CORES_KEY = 'vc.field.cores';
+/** VM0042 v2.2 §8.2.1.3(7)(c): the rule's methodology default when the bundle doesn't carry the project value. */
+const DEFAULT_RESAMPLE_INCREMENTS = 2;
+
+function readNum(k: string): number | null {
+  try {
+    const v = Number(localStorage.getItem(k));
+    return Number.isFinite(v) && v > 0 ? v : null;
+  } catch {
+    return null;
+  }
+}
 interface Check { key: string; label: string; detail: string; tone: 'ok' | 'warn' | 'bad'; blocking: boolean }
 
-function defaultLayers(from: number, to: number): Layer[] {
-  const span = to - from;
-  if (span > 0 && span % 10 === 0 && span / 10 <= 6) {
-    return Array.from({ length: span / 10 }, (_, i) => ({ from: from + i * 10, to: from + (i + 1) * 10, label: '' }));
+/** Default bags from the campaign depth: 0–10, 10–20, 20–30, 30–50 … up to the target, never fewer than `min`. */
+function defaultLayers(from: number, to: number, min = 1): Layer[] {
+  if (!(to > from)) return [{ from, to, label: '' }];
+  const cuts = [from, ...STD_CUTS.filter(c => c > from && c < to), to];
+  let out = cuts.slice(1).map((t, i) => ({ from: cuts[i], to: t, label: '' }));
+  while (out.length < min) {
+    // Split the thickest layer in half until there are enough increments.
+    const i = out.reduce((b, l, j) => (l.to - l.from > out[b].to - out[b].from ? j : b), 0);
+    const l = out[i], mid = Math.round(((l.from + l.to) / 2) * 10) / 10;
+    out = [...out.slice(0, i), { from: l.from, to: mid, label: '' }, { from: mid, to: l.to, label: '' }, ...out.slice(i + 1)];
   }
-  return [{ from, to, label: '' }];
+  return out;
 }
 
 /** Problems with the layers, in the same words the server uses (sampling/domain.py layer_problems). */
@@ -127,14 +155,49 @@ function layerProblems(layers: Layer[], start: number, reached: number | null): 
               </div>
               @if (shallow()) {
                 <div>
-                  <label class="flabel" for="dev">Why didn't the core reach {{ b.campaign.depth_to_cm }} cm?</label>
+                  <span class="flabel" id="lim-l">What stopped the probe at {{ reached() }} cm?</span>
+                  <div class="limits" role="radiogroup" aria-labelledby="lim-l">
+                    @for (d of limits; track d.key) {
+                      <button type="button" role="radio" class="lim" [class.on]="depthLimit() === d.key" [attr.aria-checked]="depthLimit() === d.key" (click)="depthLimit.set(d.key)">
+                        <strong>{{ d.label }}</strong><em>{{ d.hint }}</em>
+                      </button>
+                    }
+                  </div>
+                  @if (!depthLimit()) { <div class="ferr">Choose what stopped the core.</div> }
+                </div>
+                <div>
+                  <label class="flabel" for="dev">Note</label>
                   <textarea id="dev" class="finput" [ngModel]="deviation()" (ngModelChange)="deviation.set($event)" placeholder="Hit laterite rock at 22 cm; tried twice within 1 m."></textarea>
-                  @if (!deviation().trim()) { <div class="ferr">A reason is required for a shallow core.</div> }
+                  @if (!deviation().trim()) { <div class="ferr">Describe what you found — the office needs this for a shallow core.</div> }
+                  @if (reportingDepthProblem(); as m) { <div class="ferr">{{ m }}</div> }
+                  @else if (depthLimit() === 'stones' || depthLimit() === 'other') {
+                    <div class="fhint">Only bedrock or a hardpan lets a shallow core count to full reporting depth (VM0042 §8.2.1.3). Try again nearby if you can.</div>
+                  }
                 </div>
               }
             </section>
 
-            <div class="fsec">Layers (one bag each)</div>
+            <div class="fsec">Probe and composite</div>
+            <section class="fcard fcard-pad stackf">
+              <div class="two">
+                <div>
+                  <label class="flabel" for="probe">Probe inner diameter</label>
+                  <div class="unitf"><input id="probe" class="finput num" type="number" inputmode="decimal" min="1" max="200" step="0.5" placeholder="e.g. 50" [ngModel]="probeMm()" (ngModelChange)="setProbe($event)" /><span>mm</span></div>
+                </div>
+                <div>
+                  <label class="flabel" for="cores">Cores composited</label>
+                  <div class="stepper">
+                    <button type="button" (click)="bumpCores(-1)" [disabled]="(cores() ?? 1) <= 1" aria-label="One fewer core"><vc-icon name="minus" [size]="20" /></button>
+                    <input id="cores" class="finput num" type="number" inputmode="numeric" min="1" max="200" [ngModel]="cores()" (ngModelChange)="setCores($event)" />
+                    <button type="button" (click)="bumpCores(1)" aria-label="One more core"><vc-icon name="plus" [size]="20" /></button>
+                  </div>
+                </div>
+              </div>
+              <div class="fhint">How many cores are mixed into each bag, and the inside width of the probe. Together they give the soil volume for bulk density (VM0042 Eq. 3). Both are remembered on this phone.</div>
+              @for (e of probeErrors(); track e) { <div class="ferr">{{ e }}</div> }
+            </section>
+
+            <div class="fsec">Layers (one bag each)@if (minIncrements() > 1) { <span class="need"> · at least {{ minIncrements() }} for re-sampling</span> }</div>
             <section class="fcard layers">
               @for (l of layers(); track $index; let i = $index) {
                 <div class="lrow">
@@ -153,6 +216,7 @@ function layerProblems(layers: Layer[], start: number, reached: number | null): 
               </div>
             </section>
             @for (e of layerErrors(); track e) { <div class="bad-line"><vc-icon name="alert" [size]="18" />{{ e }}</div> }
+            @if (incrementProblem(); as m) { <div class="bad-line"><vc-icon name="alert" [size]="18" />{{ m }}</div> }
             <button class="fbtn primary block" [disabled]="!coreOk()" (click)="next()">Next: photos<vc-icon name="arrow-right" [size]="20" /></button>
           }
 
@@ -293,6 +357,21 @@ function layerProblems(layers: Layer[], start: number, reached: number | null): 
     .sum{display:flex;flex-direction:column;gap:10px}
     .sum div{display:flex;justify-content:space-between;gap:10px;font-size:14.5px}
     .sum span{color:var(--stone-600)}
+    .limits{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    .lim{display:flex;flex-direction:column;align-items:flex-start;gap:2px;min-height:64px;padding:10px 12px;border:2px solid var(--stone-300);border-radius:12px;background:#fff;font:inherit;text-align:left;cursor:pointer;color:var(--stone-800)}
+    .lim strong{font-size:16px} .lim em{font-style:normal;font-size:12.5px;color:var(--stone-600);line-height:1.3}
+    .lim.on{border-color:var(--forest-700);background:var(--forest-50);box-shadow:0 0 0 3px var(--forest-100)}
+    .lim.on strong{color:var(--forest-800)}
+    .two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    .unitf{display:flex;align-items:center;gap:8px}
+    .unitf .finput{flex:1;min-width:0;text-align:center}
+    .unitf span{font-size:15px;font-weight:600;color:var(--stone-600)}
+    .stepper{display:flex;align-items:center;gap:6px}
+    .stepper .finput{flex:1;min-width:0;text-align:center;padding:0 4px}
+    .stepper button{flex:none;display:grid;place-items:center;width:44px;height:52px;border:2px solid var(--stone-300);border-radius:12px;background:#fff;color:var(--stone-800);cursor:pointer}
+    .stepper button[disabled]{opacity:.4;cursor:default}
+    .need{text-transform:none;letter-spacing:0;font-weight:500;color:var(--forest-700)}
+    @media (max-width:380px){.two{grid-template-columns:1fr}.lim{min-height:0}}
   `],
 })
 export class FieldCapture implements OnDestroy {
@@ -319,9 +398,13 @@ export class FieldCapture implements OnDestroy {
   skipOpen = signal(false);
   skipReason = '';
 
+  limits = DEPTH_LIMITS;
   locked = signal<Fix | null>(null);
   reached = signal<number | null>(null);
   deviation = signal('');
+  depthLimit = signal<DepthLimit | null>(null);
+  probeMm = signal<number | null>(readNum(PROBE_KEY));
+  cores = signal<number | null>(readNum(CORES_KEY) ?? 1);
   layers = signal<Layer[]>([]);
   photos = signal<QueuedPhoto[]>([]);
   thumbs = signal<Record<string, string>>({});
@@ -359,7 +442,34 @@ export class FieldCapture implements OnDestroy {
     const b = this.bundle();
     return b ? layerProblems(this.layers(), b.campaign.depth_from_cm, this.reached()) : [];
   });
-  coreOk = computed(() => this.reached() !== null && this.reached()! > 0 && !this.layerErrors().length && (!this.shallow() || !!this.deviation().trim()));
+  /** Monitoring (re-sampling) cores must be split into several depth increments (VM0042 §8.2.1.3(7)(c)). */
+  minIncrements = computed(() => {
+    const b = this.bundle();
+    if (!b || b.campaign.kind !== 'monitoring') return 1;
+    return Math.max(DEFAULT_RESAMPLE_INCREMENTS, b.resampleMinIncrements ?? DEFAULT_RESAMPLE_INCREMENTS);
+  });
+  incrementProblem = computed(() => {
+    const need = this.minIncrements(), have = this.layers().length;
+    return need > 1 && have < need
+      ? `This is a re-sampling (monitoring) campaign: split the core into at least ${need} depth increments, for example 0–30 and 30–50 cm. It has ${have}.`
+      : null;
+  });
+  /** Mirrors the server's REPORTING_DEPTH_SHALLOW check, when the bundle carries the project's reporting depth. */
+  reportingDepthProblem = computed(() => {
+    const d = this.bundle()?.stockDepthCm, r = this.reached(), lim = this.depthLimit();
+    if (d == null || r === null || r >= d - 1e-6 || lim === 'bedrock' || lim === 'hardpan') return null;
+    return `Soil carbon must be reported to ${d} cm. A shallower core is accepted only when bedrock or a hardpan stopped it — try again nearby.`;
+  });
+  probeErrors = computed(() => {
+    const out: string[] = [];
+    const p = this.probeMm(), c = this.cores();
+    if (p !== null && !(p > 0 && p <= 200)) out.push('The probe diameter must be between 1 and 200 mm.');
+    if (c !== null && !(Number.isInteger(c) && c >= 1 && c <= 200)) out.push('The number of cores must be a whole number from 1 to 200.');
+    return out;
+  });
+  shallowOk = computed(() => !this.shallow() || (!!this.depthLimit() && !!this.deviation().trim() && !this.reportingDepthProblem()));
+  coreOk = computed(() => this.reached() !== null && this.reached()! > 0 && !this.layerErrors().length && !this.incrementProblem()
+    && this.shallowOk() && !this.probeErrors().length);
   photoCount = computed(() => this.photos().filter(p => p.kind !== 'extra').length);
   labelsOk = computed(() => this.layers().every((l, i) => !!l.label && !this.labelError(i)));
   lockedAt = computed(() => {
@@ -401,7 +511,22 @@ export class FieldCapture implements OnDestroy {
       ? { key: 'depth', label: 'Depth reached', detail: `${r} cm of ${b.campaign.depth_to_cm} cm.`, tone: 'ok', blocking: false }
       : this.deviation().trim()
         ? { key: 'depth', label: 'Shallow core', detail: `${r} of ${b.campaign.depth_to_cm} cm. Reason: ${this.deviation().trim()}`, tone: 'warn', blocking: false }
-        : { key: 'depth', label: 'Shallow core without a reason', detail: 'Go back to Core and say why.', tone: 'bad', blocking: true });
+        : { key: 'depth', label: 'Shallow core without a note', detail: 'Go back to Core and describe what you found.', tone: 'bad', blocking: true });
+    if (this.shallow() && this.depthLimit()) {
+      const lim = DEPTH_LIMITS.find(d => d.key === this.depthLimit())!;
+      const rp = this.reportingDepthProblem();
+      out.push(rp
+        ? { key: 'limit', label: 'Below the reporting depth', detail: rp, tone: 'bad', blocking: true }
+        : { key: 'limit', label: `Depth limit: ${lim.label}`, detail: lim.key === 'bedrock' || lim.key === 'hardpan' ? 'Recorded as the reason the core is shallow.' : 'Only bedrock or a hardpan fully justifies a shallow core; the office may ask for a re-take.', tone: lim.key === 'bedrock' || lim.key === 'hardpan' ? 'ok' : 'warn', blocking: false });
+    } else if (this.shallow()) {
+      out.push({ key: 'limit', label: 'What stopped the core?', detail: 'Go back to Core and choose bedrock, hardpan, stones or other.', tone: 'bad', blocking: true });
+    }
+    const pm = this.probeMm(), cn = this.cores();
+    out.push(pm && cn
+      ? { key: 'probe', label: 'Probe and composite', detail: `${pm} mm probe, ${cn} ${cn === 1 ? 'core' : 'cores'} per bag set.`, tone: 'ok', blocking: false }
+      : { key: 'probe', label: 'Probe or core count missing', detail: 'Without the probe diameter and number of cores, bulk density can\'t be worked out from this sample.', tone: 'warn', blocking: false });
+    const ip = this.incrementProblem();
+    if (ip) out.push({ key: 'incr', label: 'Too few depth increments', detail: ip, tone: 'bad', blocking: true });
     const le = this.layerErrors();
     out.push(le.length
       ? { key: 'layers', label: 'Layers don\'t fit together', detail: le[0], tone: 'bad', blocking: true }
@@ -428,7 +553,7 @@ export class FieldCapture implements OnDestroy {
     this.bundle.set(b);
     const p = b?.points.find(x => x.id === pid) ?? null;
     this.point.set(p);
-    if (b) this.layers.set(defaultLayers(b.campaign.depth_from_cm, b.campaign.depth_to_cm));
+    if (b) this.layers.set(defaultLayers(b.campaign.depth_from_cm, b.campaign.depth_to_cm, this.incrementsFor(b)));
     if (b) this.reached.set(b.campaign.depth_to_cm);
     const all = await this.store.allSamples();
     this.usedLabels.set(new Set(all.filter(s => s.state !== 'rejected').flatMap(s => s.payload.layers.map(l => l.label_qr.toUpperCase()))));
@@ -480,14 +605,37 @@ export class FieldCapture implements OnDestroy {
 
   resetLayers() {
     const b = this.bundle()!;
-    this.layers.set(defaultLayers(b.campaign.depth_from_cm, b.campaign.depth_to_cm));
+    this.layers.set(defaultLayers(b.campaign.depth_from_cm, b.campaign.depth_to_cm, this.incrementsFor(b)));
+  }
+
+  private incrementsFor(b: Bundle) {
+    return b.campaign.kind === 'monitoring' ? Math.max(DEFAULT_RESAMPLE_INCREMENTS, b.resampleMinIncrements ?? 0) : 1;
+  }
+
+  /* ------------------------------------------------------------ probe & composite */
+  setProbe(v: unknown) {
+    const n = v === '' || v === null ? null : Number(v);
+    this.probeMm.set(n);
+    try { if (n && n > 0 && n <= 200) localStorage.setItem(PROBE_KEY, String(n)); } catch { /* storage full or blocked */ }
+  }
+
+  setCores(v: unknown) {
+    const n = v === '' || v === null ? null : Number(v);
+    this.cores.set(n);
+    try { if (n && Number.isInteger(n) && n >= 1) localStorage.setItem(CORES_KEY, String(n)); } catch { /* ignore */ }
+  }
+
+  bumpCores(d: number) {
+    this.setCores(Math.max(1, Math.min(200, (this.cores() ?? 1) + d)));
   }
 
   fitLayers() {
     const r = this.reached();
     if (r === null) return;
+    const b = this.bundle()!;
     const kept = this.layers().filter(l => l.from < r).map(l => ({ ...l, to: Math.min(l.to, r) }));
-    this.layers.set(kept.length ? kept : [{ from: this.bundle()!.campaign.depth_from_cm, to: r, label: '' }]);
+    const need = this.incrementsFor(b);
+    this.layers.set(kept.length >= need ? kept : defaultLayers(b.campaign.depth_from_cm, r, need));
   }
 
   /* ------------------------------------------------------------ photos */
@@ -582,6 +730,9 @@ export class FieldCapture implements OnDestroy {
           depth_reached_cm: Number(this.reached()),
           layers: [...this.layers()].sort((a, c) => a.from - c.from).map(x => ({ depth_from_cm: x.from, depth_to_cm: x.to, label_qr: x.label })),
           deviation_reason: this.shallow() ? this.deviation().trim() : null,
+          depth_limit: this.shallow() ? this.depthLimit() : null,
+          probe_diameter_mm: this.probeMm() && this.probeMm()! > 0 ? Number(this.probeMm()) : null,
+          cores_composited: this.cores() && this.cores()! >= 1 ? Number(this.cores()) : null,
           device_id: deviceId(),
         },
         photos: this.photos(),

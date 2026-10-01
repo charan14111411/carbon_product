@@ -8,6 +8,7 @@ import { Chart } from '../../ui/chart';
 import { KIT } from '../../ui/kit';
 import { FieldLite, Remote, TIER_ORDER, daysAgo, isSimulated, isoDate, tierMeta } from './shared';
 import { QualityBar, TierChip } from './tier-chip';
+import { DerivedFeatures } from './derived-features';
 
 interface SummaryParam {
   parameter: string; label: string; unit: string; synced: boolean; tier: number | null; tier_label?: string;
@@ -24,7 +25,7 @@ const WINDOWS = [{ d: 30, l: '30 days' }, { d: 90, l: '90 days' }, { d: 180, l: 
 
 @Component({
   selector: 'vc-explorer-tab',
-  imports: [...KIT, FormsModule, Chart, TierChip, QualityBar, NumPipe, DayPipe],
+  imports: [...KIT, FormsModule, Chart, TierChip, QualityBar, NumPipe, DayPipe, DerivedFeatures],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="bar">
@@ -114,6 +115,8 @@ const WINDOWS = [{ d: 30, l: '30 days' }, { d: 90, l: '90 days' }, { d: 180, l: 
           </div>
         }
       </section>
+
+      <vc-derived-features [fieldId]="fieldId()" [windowDays]="windowDays()" />
     }
   `,
   styles: [`
@@ -226,7 +229,7 @@ export class ExplorerTab {
     // Start on the first field so the tab never opens blank.
     effect(() => {
       const fs = this.fields();
-      untracked(() => { if (!this.fieldId() && fs.length) this.fieldId.set(fs[0].id); });
+      untracked(() => { if (fs.length && !fs.some(f => f.id === this.fieldId())) this.fieldId.set(fs[0].id); });
     });
     effect(() => {
       const id = this.fieldId();

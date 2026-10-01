@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, effect, inject, input, signal, untracked } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { RouterLink } from '@angular/router';
+import { ActivatedRoute, RouterLink } from '@angular/router';
 import { forkJoin, of } from 'rxjs';
 import { catchError } from 'rxjs/operators';
 import { ApiError, ApiService } from '../../core/api.service';
@@ -10,9 +10,11 @@ import { ToastService } from '../../core/toast.service';
 import { Icon } from '../../ui/icon';
 import { Badge, Callout, DataClass, Empty, ErrorBox, Loading, Modal, Progress, Tabs } from '../../ui/kit';
 import { MapView } from '../../ui/map-view';
+import { AnnexButtons } from './annex';
 import { ConfirmDialog } from './confirm';
 import { PlanModal } from './plan-modal';
 import { SampleView } from './sample-view';
+import { SamplingDesignCard } from './design';
 import {
   Campaign, CampaignStatus, Finding, SampleDetail, SamplePlan, SampleSummary, SamplingPoint, STATUS_COLOR, Stratum, UserLite,
 } from './types';
@@ -31,7 +33,7 @@ const NEXT_TEXT: Record<string, string> = {
   selector: 'vc-campaign-page',
   imports: [
     FormsModule, RouterLink, Icon, Badge, Callout, DataClass, Empty, ErrorBox, Loading, Modal, Progress, Tabs, MapView,
-    ConfirmDialog, PlanModal, SampleView, DayPipe, NumPipe, HumanPipe,
+    ConfirmDialog, PlanModal, SampleView, AnnexButtons, SamplingDesignCard, DayPipe, NumPipe, HumanPipe,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
@@ -51,8 +53,13 @@ const NEXT_TEXT: Record<string, string> = {
             <span>{{ c.planned_start | day }} – {{ c.planned_end | day }}</span>
             <span>Depth {{ c.depth_from_cm | num: 0 }}–{{ c.depth_to_cm | num: 0 }} cm</span>
             <span>Placement seed <code>{{ c.placement_seed }}</code></span>
+            @if (c.season) { <span>Season: {{ c.season }}</span> }
           </div>
+          @if (c.season_override_reason) {
+            <div class="ovr"><vc-icon name="calendar-clock" [size]="14" /><span><strong>Sampled outside the baseline season.</strong> {{ c.season_override_reason }}</span><span class="chipref">VM0042 §8.2.1.2</span></div>
+          }
         </div>
+        <div class="hd-act"><vc-annex-buttons [projectId]="c.project_id" /></div>
       </header>
 
       <section class="card stepper">
@@ -103,9 +110,11 @@ const NEXT_TEXT: Record<string, string> = {
                       <td><code>{{ row.zone.code }}</code>&ngsp;<span class="muted">{{ row.zone.name }}</span></td>
                       @if (row.plan; as pl) {
                         <td class="num"><strong>{{ pl.n_required }}</strong></td>
-                        <td>{{ pl.method === 'manual' ? 'Entered' : 'Variance formula' }}</td>
+                        <td>{{ pl.inputs['power_s'] !== undefined ? 'Power analysis (Eq. 1–2)' : pl.method === 'manual' ? 'Entered' : 'Variance formula' }}</td>
                         <td class="small muted">
-                          @if (pl.method === 'variance_formula') {
+                          @if (pl.inputs['power_s'] !== undefined) {
+                            Power analysis · S {{ pl.inputs['power_s'] }} · MDD {{ pl.inputs['power_mdd'] | num: 2 }} · α {{ pl.inputs['power_alpha'] }} · power {{ pl.inputs['power_beta_power'] }}
+                          } @else if (pl.method === 'variance_formula') {
                             mean {{ pl.inputs['prior_mean'] }} · sd {{ pl.inputs['prior_sd'] }} · e {{ pl.inputs['target_error_pct'] }}% · {{ (pl.inputs['confidence'] || 0.9) * 100 }}%
                             @if (pl.inputs['floor_applied']) { <br /><span class="warn">raised to methodology minimum {{ pl.inputs['floor_applied'] }}</span> }
                           } @else { — }
@@ -208,6 +217,9 @@ const NEXT_TEXT: Record<string, string> = {
         }
       }
 
+      <!-- ------------------------------------------------------------ design (Appendix 6) -->
+      @if (tab() === 'design') { <vc-sampling-design [campaign]="c" /> }
+
       <!-- ------------------------------------------------------------ samples -->
       @if (tab() === 'samples') {
         <section class="card">
@@ -222,7 +234,7 @@ const NEXT_TEXT: Record<string, string> = {
               <table class="table">
                 <thead><tr>
                   <th>Sample</th><th>Site</th><th>Collected</th><th class="num">GPS accuracy</th><th class="num">From site</th>
-                  <th class="num">Depth</th><th class="num">Photos</th><th class="num">QA findings</th><th>Custody</th>
+                  <th class="num">Depth</th><th class="num">Cores</th><th class="num">Photos</th><th class="num">QA findings</th><th>Custody</th>
                 </tr></thead>
                 <tbody>
                   @for (s of samples(); track s.id) {
@@ -233,7 +245,8 @@ const NEXT_TEXT: Record<string, string> = {
                       <td class="nowrap">{{ s.collected_at | day: true }}</td>
                       <td class="num">{{ s.gps_accuracy_m === null ? '—' : (s.gps_accuracy_m | num: 1) + ' m' }}</td>
                       <td class="num">{{ s.distance_from_site_m | num: 1 }} m</td>
-                      <td class="num">{{ s.depth_reached_cm | num: 0 }} cm</td>
+                      <td class="num nowrap">{{ s.depth_reached_cm | num: 0 }} cm @if (s.depth_limit) { <span class="lim" [title]="'Stopped by ' + s.depth_limit">{{ s.depth_limit | human }}</span> }</td>
+                      <td class="num">{{ s.cores_composited ?? '—' }}</td>
                       <td class="num">{{ s.photo_ids.length }}</td>
                       <td class="num">@if (fc) { <span class="fcount">{{ fc }}</span> } @else { <span class="subtle">0</span> }</td>
                       <td><vc-badge [status]="s.status === 'none' ? 'pending' : 'active'">{{ s.status | human }}</vc-badge></td>
@@ -290,7 +303,7 @@ const NEXT_TEXT: Record<string, string> = {
         @if (viewPlan(); as pl) {
           <dl class="kv">
             <dt>Cores required</dt><dd><strong>{{ pl.n_required }}</strong>&ngsp;<vc-dc cls="CALCULATED" /></dd>
-            <dt>Method</dt><dd>{{ pl.method === 'manual' ? 'Entered by hand' : 'n = ⌈(z·sd/(e·mean))²⌉' }}</dd>
+            <dt>Method</dt><dd>{{ pl.inputs['power_s'] !== undefined ? 'Power analysis, VM0042 Eq. 1–2' : pl.method === 'manual' ? 'Entered by hand' : 'n = ⌈(z·sd/(e·mean))²⌉' }}</dd>
             @for (k of inputKeys(pl); track k) { <dt>{{ k | human }}</dt><dd class="num">{{ pl.inputs[k] }}</dd> }
             <dt>Justification</dt><dd>{{ pl.justification }}</dd>
             <dt>Created by</dt><dd>{{ pl.created_by || '—' }}</dd>
@@ -328,7 +341,13 @@ const NEXT_TEXT: Record<string, string> = {
   `,
   styles: [`
     .back{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--text-2);margin-bottom:14px}
-    .hd{margin-bottom:18px}
+    .hd{margin-bottom:18px;display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap}
+    .hd .titles{flex:1;min-width:280px}
+    .hd-act{padding-top:4px}
+    .ovr{display:flex;align-items:flex-start;gap:8px;margin-top:10px;padding:8px 12px;border-radius:var(--radius-sm);background:var(--warn-soft);border:1px solid #f1dcae;font-size:13px;color:var(--stone-800);max-width:760px}
+    .ovr vc-icon{color:var(--amber-600);margin-top:2px}
+    .chipref{flex:none;font:600 10.5px/1 var(--mono);padding:4px 6px;border-radius:4px;background:var(--surface);border:1px solid var(--border);color:var(--stone-700)}
+    .lim{display:inline-block;margin-left:4px;font-size:11px;padding:0 6px;border-radius:999px;background:var(--sand-200);color:var(--stone-700)}
     .titles h1{margin-top:6px}
     .code{font-size:12.5px;color:var(--stone-600)}
     .meta{display:flex;flex-wrap:wrap;gap:4px 18px;margin-top:8px;color:var(--text-2);font-size:13px}
@@ -385,7 +404,9 @@ export class CampaignPage {
   findings = signal<Finding[]>([]);
   busy = signal(false);
 
-  tab = signal('plans');
+  private route = inject(ActivatedRoute);
+  /** ?tab=plans|points|samples and ?sample=<id> deep-link into a tab or a sample drawer. */
+  tab = signal(['plans', 'design', 'points', 'samples'].includes(this.route.snapshot.queryParamMap.get('tab') ?? '') ? this.route.snapshot.queryParamMap.get('tab')! : 'plans');
   planOpen = signal(false);
   planZone = signal<Stratum | null>(null);
   advanceOpen = signal(false);
@@ -413,6 +434,7 @@ export class CampaignPage {
   allApproved = computed(() => this.zones().length > 0 && this.approvedCount() === this.zones().length);
   tabs = computed(() => [
     { key: 'plans', label: 'Sample plans', count: this.plans().length },
+    { key: 'design', label: 'Sampling design' },
     { key: 'points', label: 'Points', count: this.points().length },
     { key: 'samples', label: 'Samples', count: this.c()?.progress?.points_collected ?? null },
   ]);
@@ -500,7 +522,13 @@ export class CampaignPage {
     this.sLoading.set(true);
     this.sError.set(null);
     this.api.get<SampleSummary[]>('/samples', { campaign_id: c.id }).subscribe({
-      next: s => { this.samples.set(s); this.sLoading.set(false); },
+      next: s => {
+        this.samples.set(s);
+        this.sLoading.set(false);
+        const want = this.route.snapshot.queryParamMap.get('sample');
+        const hit = want && !this.sampleOpen() ? s.find(x => x.id === want || x.code === want) : null;
+        if (hit) this.openSample(hit);
+      },
       error: (e: ApiError) => { this.sError.set(e.message); this.sLoading.set(false); },
     });
     if (this.auth.can('data.read')) {

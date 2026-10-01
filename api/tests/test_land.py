@@ -7,7 +7,7 @@ from app.core import db as dbmod
 from app.core import geo
 from app.core.errors import ImmutableRecord
 from app.modules.land.domain import LandUseSpan, land_use_check, lookback_window
-from app.modules.land.models import LandUseRecord
+from app.modules.land.models import Farm, Field, LandTenure, LandUseRecord
 from app.modules.partners.models import DomainEvent
 from tests.conftest import login, make_org, make_user
 from tests.test_farmers import mk_farmer
@@ -64,11 +64,22 @@ def mk_project(client, h, code="PRJ-1", programme=None, start="2025-01-01", end=
     return programme, r.json()
 
 
+def grant_tenure(field_id, valid_from=date(2000, 1, 1), valid_to=None, status="verified", kind="owned"):
+    """Seed-free factory: a tenure record for the field's farmer, written straight to the database."""
+    with dbmod.session_factory()() as s:
+        f = s.get(Field, uuid.UUID(field_id))
+        farm = s.get(Farm, f.farm_id)
+        s.add(LandTenure(org_id=f.org_id, field_id=f.id, holder_farmer_id=farm.farmer_id, kind=kind,
+                         document_evidence_ids=[], valid_from=valid_from, valid_to=valid_to, status=status))
+        s.commit()
+
+
 def ready_field(client, h, phone="9812345670", **field_kw):
     farmer, farm = farm_for(client, h, phone)
     field = mk_field(client, h, farm["id"], **field_kw)
     add_history(client, h, field["id"])
     consent(client, h, farmer["id"])
+    grant_tenure(field["id"])
     return farmer, farm, field
 
 
@@ -291,7 +302,10 @@ def test_enrolment_happy_path(client, as_role):
     e = enrol(client, h, project["id"], field["id"])
     assert e["status"] == "eligible", e["eligibility"]
     assert set(checks_of(e)) == {"inside_programme_boundary", "crop_eligible", "land_use_history",
-                                 "not_double_enrolled", "farmer_consent"}
+                                 "not_double_enrolled", "farmer_consent", "no_native_clearing", "land_cover",
+                                 "not_wetland", "lookback_activity_records", "land_tenure"}
+    lookback = checks_of(e)["lookback_activity_records"]
+    assert lookback["severity"] == "warning" and lookback["passed"] and lookback["details"]["missing_years"]
     assert e["farmer_id"] == farmer["id"] and e["field_code"] == field["code"]
     c = client.post(f"/api/projects/{project['id']}/enrolments/{e['id']}/confirm", headers=h)
     assert c.status_code == 200, c.text
@@ -346,6 +360,7 @@ def test_lookback_years_from_programme_terms(client, as_role):
     field = mk_field(client, h, farm["id"])
     add_history(client, h, field["id"], YEAR - 5, YEAR - 1)
     consent(client, h, farmer["id"])
+    grant_tenure(field["id"])
     _, project = mk_project(client, h, commercial_terms={"lookback_years": 5})
     e = enrol(client, h, project["id"], field["id"])
     assert e["status"] == "eligible" and checks_of(e)["land_use_history"]["details"]["lookback_years"] == 5
@@ -369,6 +384,7 @@ def test_missing_consent_is_ineligible(client, as_role):
     field = mk_field(client, h, farm["id"])
     add_history(client, h, field["id"])
     consent(client, h, farmer["id"], purposes=("sampling",))
+    grant_tenure(field["id"])
     _, project = mk_project(client, h)
     e = enrol(client, h, project["id"], field["id"])
     assert e["status"] == "ineligible" and checks_of(e)["farmer_consent"]["details"]["missing"] == ["data_use"]
@@ -479,3 +495,236 @@ def test_land_tenant_isolation(client, as_role):
     r = client.post(f"/api/projects/{their_project['id']}/enrolments", headers=other, json={"field_id": field["id"]})
     assert r.status_code == 404
     assert client.get(f"/api/projects/{project['id']}/enrolments", headers=other).status_code == 404
+
+
+# ------------------------------------------------------------------ VM0042 §4 applicability (pure)
+from app.modules.land.domain import (  # noqa: E402
+    land_cover_checks, native_clearing_check, slope_class, uncovered_periods,
+)
+
+
+@pytest.mark.parametrize("pct,cls", [(0, "nearly_level"), (3, "nearly_level"), (3.5, "gently_sloping"),
+                                     (4, "gently_sloping"), (8, "gently_sloping"), (9, "strongly_sloping"),
+                                     (16, "strongly_sloping"), (17, "moderately_steep"), (30, "moderately_steep"),
+                                     (31, "steep"), (45, "steep"), (46, "very_steep"), (None, None)])
+def test_slope_classes_appendix5_table10(pct, cls):
+    assert slope_class(pct) == cls
+
+
+def test_native_clearing_within_10_years_fails():
+    c = native_clearing_check([_span(2000, 2017, "forest"), _span(2018, 2025, "cropland")], 2025)
+    assert not c.passed and c.details["conversions"] == [{"year": 2018, "from": "forest", "to": "cropland"}]
+    assert "2018" in c.message
+
+
+def test_native_clearing_before_window_passes():
+    assert native_clearing_check([_span(1990, 2013, "forest"), _span(2014, 2025, "cropland")], 2025).passed
+
+
+def test_native_grassland_to_cropland_is_clearing_but_managed_grassland_is_not():
+    assert not native_clearing_check([_span(2000, 2019, "native_grassland"), _span(2020, 2025, "cropland")],
+                                     2025).passed
+    assert native_clearing_check([_span(2000, 2019, "grassland"), _span(2020, 2025, "cropland")], 2025).passed
+    # grazing native grassland is not a clearing
+    assert native_clearing_check([_span(2000, 2019, "native_grassland"), _span(2020, 2025, "grassland")],
+                                 2025).passed
+
+
+def test_land_cover_rules():
+    ok = {c.code: c.passed for c in land_cover_checks("cropland", "coffee", {}, False)}
+    assert ok == {"land_cover": True, "not_wetland": True}
+    assert all(c.passed for c in land_cover_checks("grassland", None, {}, False))
+    other = {c.code: c.passed for c in land_cover_checks("other", None, {}, False)}
+    assert other["land_cover"] is False
+    wet = {c.code: c.passed for c in land_cover_checks("wetland", "coffee", {}, True)}
+    assert wet == {"land_cover": False, "not_wetland": False}
+    rice_no_ev = {c.code: c.passed for c in land_cover_checks("wetland", "rice", {"water_regime": "continuous"},
+                                                              False)}
+    assert rice_no_ev["not_wetland"] is False
+    assert all(c.passed for c in land_cover_checks("wetland", "rice", {"water_regime": "awd"}, True))
+    assert not all(c.passed for c in land_cover_checks("wetland", "rice", {"water_regime": "rainfed"}, True))
+
+
+def test_uncovered_periods():
+    d = date
+    assert uncovered_periods([(d(2020, 1, 1), None)], d(2025, 1, 1), d(2034, 12, 31)) == []
+    assert uncovered_periods([], d(2025, 1, 1), d(2025, 12, 31)) == [(d(2025, 1, 1), d(2025, 12, 31))]
+    gaps = uncovered_periods([(d(2025, 1, 1), d(2027, 12, 31)), (d(2029, 1, 1), d(2040, 1, 1))],
+                             d(2025, 1, 1), d(2034, 12, 31))
+    assert gaps == [(d(2028, 1, 1), d(2028, 12, 31))]
+    assert uncovered_periods([(d(2026, 1, 1), None)], d(2025, 1, 1), d(2030, 1, 1)) == [
+        (d(2025, 1, 1), d(2025, 12, 31))]
+    assert uncovered_periods([(d(2020, 1, 1), d(2030, 6, 30)), (d(2030, 7, 1), None)],
+                             d(2025, 1, 1), d(2034, 12, 31)) == []
+
+
+# ------------------------------------------------------------------ Table 7 attributes on fields
+def test_field_site_attributes_and_slope_class(client, as_role):
+    h = as_role("programme_admin")
+    _, farm = farm_for(client, h)
+    f = mk_field(client, h, farm["id"])
+    assert f["slope_class"] is None and f["land_cover"] == "cropland"
+    r = client.patch(f"/api/fields/{f['id']}", headers=h, json={
+        "slope_pct": 22.5, "aspect_deg": 135, "soil_texture_class": "Sandy Clay Loam", "wrb_soil_group": "nitisol",
+        "ecoregion": "South Western Ghats moist deciduous forests", "climate_zone": "Tropical Moist",
+        "mean_annual_precip_mm": 1850, "land_cover": "grassland"})
+    assert r.status_code == 200, r.text
+    b = r.json()
+    assert b["slope_class"] == "moderately_steep" and b["soil_texture_class"] == "sandy_clay_loam"
+    assert b["wrb_soil_group"] == "Nitisols" and b["climate_zone"] == "tropical_moist"
+    assert b["land_cover"] == "grassland" and b["mean_annual_precip_mm"] == 1850
+    assert client.get(f"/api/fields/{f['id']}", headers=h).json()["slope_class"] == "moderately_steep"
+    for bad in ({"slope_pct": -1}, {"aspect_deg": 360}, {"soil_texture_class": "gravel"},
+                {"wrb_soil_group": "Moonsols"}, {"climate_zone": "martian"}, {"mean_annual_precip_mm": -5},
+                {"land_cover": "forest"}):
+        assert client.patch(f"/api/fields/{f['id']}", headers=h, json=bad).status_code == 422, bad
+    cleared = client.patch(f"/api/fields/{f['id']}", headers=h, json={"slope_pct": None}).json()
+    assert cleared["slope_pct"] is None and cleared["slope_class"] is None
+    created = mk_field(client, h, farm["id"], lon=east(3), slope_pct=2, land_cover="grassland")
+    assert created["slope_class"] == "nearly_level" and created["land_cover"] == "grassland"
+
+
+# ------------------------------------------------------------------ land tenure
+def _doc(client, h, name="deed.pdf", kind="document", **data):
+    r = client.post("/api/evidence", headers=h,
+                    files={"file": (name, b"%PDF-1.4 " + name.encode(), "application/pdf")},
+                    data={"kind": kind, **data})
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def test_tenure_create_verify_four_eyes(client, as_role):
+    h = as_role("programme_admin")
+    farmer, farm = farm_for(client, h)
+    f = mk_field(client, h, farm["id"])
+    doc = _doc(client, h)
+    url = f"/api/fields/{f['id']}/tenure"
+
+    def post(**kw):
+        body = {"holder_farmer_id": farmer["id"], "kind": "owned", "document_evidence_ids": [doc["id"]],
+                "valid_from": "2010-01-01", **kw}
+        return client.post(url, headers=h, json=body)
+
+    assert post(document_evidence_ids=[]).status_code == 422
+    assert post(kind="other").status_code == 422  # 'other' needs notes
+    assert post(kind="leased", valid_from="2030-01-01", valid_to="2020-01-01").status_code == 422
+    assert post(document_evidence_ids=[str(uuid.uuid4())]).status_code == 404
+    r = post()
+    assert r.status_code == 201, r.text
+    t = r.json()
+    assert t["status"] == "pending" and t["document_evidence_ids"] == [doc["id"]]
+    own = client.post(f"/api/tenure/{t['id']}/verify", headers=h, json={"decision": "verified"})
+    assert own.status_code == 403 and own.json()["code"] == "SELF_APPROVAL_REJECTED"
+    collector = as_role("field_collector")
+    assert client.post(f"/api/tenure/{t['id']}/verify", headers=collector,
+                       json={"decision": "verified"}).status_code == 403
+    other = as_role("programme_admin", fresh=True)
+    assert client.post(f"/api/tenure/{t['id']}/verify", headers=other,
+                       json={"decision": "rejected"}).status_code == 422  # rejection needs a note
+    ok = client.post(f"/api/tenure/{t['id']}/verify", headers=other, json={"decision": "verified", "note": "Deed seen"})
+    assert ok.status_code == 200 and ok.json()["status"] == "verified" and ok.json()["verified_by"]
+    assert client.post(f"/api/tenure/{t['id']}/verify", headers=other, json={"decision": "verified"}).status_code == 409
+    assert [x["id"] for x in client.get(url, headers=collector).json()] == [t["id"]]
+    assert any(a["action"] == "land_tenure.verified" for a in client.get("/api/audit", headers=h).json())
+
+
+def test_enrolment_requires_verified_tenure_covering_period(client, as_role):
+    h = as_role("programme_admin")
+    farmer, farm = farm_for(client, h)
+    f = mk_field(client, h, farm["id"])
+    add_history(client, h, f["id"])
+    consent(client, h, farmer["id"])
+    _, project = mk_project(client, h, start="2025-01-01", end="2034-12-31")
+    e = enrol(client, h, project["id"], f["id"])
+    c = checks_of(e)["land_tenure"]
+    assert e["status"] == "ineligible" and not c["passed"] and "No verified land-tenure" in c["message"]
+    grant_tenure(f["id"], status="pending")
+    c = checks_of(enrol(client, h, project["id"], f["id"]))["land_tenure"]
+    assert not c["passed"] and "waiting for verification" in c["message"]
+    grant_tenure(f["id"], valid_from=date(2020, 1, 1), valid_to=date(2029, 12, 31))  # lease ends early
+    c = checks_of(enrol(client, h, project["id"], f["id"]))["land_tenure"]
+    assert not c["passed"] and "2030-01-01" in c["message"]
+    assert c["details"]["gaps"] == [["2030-01-01", "2034-12-31"]]
+    grant_tenure(f["id"], valid_from=date(2030, 1, 1), valid_to=None)  # renewal
+    e = enrol(client, h, project["id"], f["id"])
+    assert e["status"] == "eligible" and checks_of(e)["land_tenure"]["passed"]
+
+
+def test_tenure_of_another_farmer_does_not_count(client, as_role):
+    h = as_role("programme_admin")
+    farmer, farm = farm_for(client, h)
+    f = mk_field(client, h, farm["id"])
+    add_history(client, h, f["id"])
+    consent(client, h, farmer["id"])
+    other = mk_farmer(client, h, phone="9812345679", name="Landlord")
+    with dbmod.session_factory()() as s:
+        fld = s.get(Field, uuid.UUID(f["id"]))
+        s.add(LandTenure(org_id=fld.org_id, field_id=fld.id, holder_farmer_id=uuid.UUID(other["id"]), kind="owned",
+                         document_evidence_ids=[], valid_from=date(2000, 1, 1), status="verified"))
+        s.commit()
+    _, project = mk_project(client, h)
+    assert enrol(client, h, project["id"], f["id"])["status"] == "ineligible"
+
+
+def test_project_without_crediting_period_fails_tenure(client, as_role):
+    h = as_role("programme_admin")
+    _, _, f = ready_field(client, h)
+    prog = client.post("/api/programmes", headers=h, json={"code": "PG-X", "name": "Programme"}).json()
+    project = client.post("/api/projects", headers=h, json={"programme_id": prog["id"], "code": "NODATE",
+                                                             "name": "Project"}).json()
+    c = checks_of(enrol(client, h, project["id"], f["id"]))["land_tenure"]
+    assert not c["passed"] and "crediting period" in c["message"]
+
+
+def test_tenure_tenant_isolation(client, as_role):
+    h = as_role("programme_admin")
+    farmer, farm = farm_for(client, h)
+    f = mk_field(client, h, farm["id"])
+    t = client.post(f"/api/fields/{f['id']}/tenure", headers=h, json={
+        "holder_farmer_id": farmer["id"], "kind": "owned", "document_evidence_ids": [_doc(client, h)["id"]],
+        "valid_from": "2010-01-01"}).json()
+    rival = login(client, make_user(make_org("Rival"), "programme_admin"))
+    assert client.get(f"/api/fields/{f['id']}/tenure", headers=rival).status_code == 404
+    assert client.post(f"/api/tenure/{t['id']}/verify", headers=rival, json={"decision": "verified"}).status_code == 404
+    _, rival_farm = farm_for(client, rival, phone="9812345677")
+    rf = mk_field(client, rival, rival_farm["id"])
+    assert client.post(f"/api/fields/{rf['id']}/tenure", headers=rival, json={
+        "holder_farmer_id": farmer["id"], "kind": "owned", "document_evidence_ids": [_doc(client, rival)["id"]],
+        "valid_from": "2010-01-01"}).status_code == 404
+
+
+# ------------------------------------------------------------------ applicability through enrolment
+def test_native_clearing_blocks_enrolment(client, as_role):
+    h = as_role("programme_admin")
+    farmer, farm = farm_for(client, h)
+    f = mk_field(client, h, farm["id"])
+    add_history(client, h, f["id"], 1990, 2019, use="native_grassland")
+    add_history(client, h, f["id"], 2020, YEAR - 1, use="cropland")
+    consent(client, h, farmer["id"])
+    grant_tenure(f["id"])
+    _, project = mk_project(client, h, commercial_terms={"lookback_years": 3})
+    e = enrol(client, h, project["id"], f["id"])
+    c = checks_of(e)["no_native_clearing"]
+    assert e["status"] == "ineligible" and not c["passed"] and c["details"]["conversions"][0]["year"] == 2020
+    assert checks_of(e)["land_use_history"]["passed"]  # the older rule alone would have let it through
+
+
+def test_wetland_rice_needs_hydrology_evidence(client, as_role):
+    h = as_role("programme_admin")
+    _, _, f = ready_field(client, h, crop="rice", attrs={"water_regime": "continuous"})
+    assert client.patch(f"/api/fields/{f['id']}", headers=h, json={"land_cover": "wetland"}).status_code == 200
+    _, project = mk_project(client, h)
+    e = enrol(client, h, project["id"], f["id"])
+    assert e["status"] == "ineligible" and "no_wetland_hydrology_impact" in checks_of(e)["not_wetland"]["message"]
+    _doc(client, h, "hydrology.pdf", kind="no_wetland_hydrology_impact", entity_type="field", entity_id=f["id"])
+    e = enrol(client, h, project["id"], f["id"])
+    assert e["status"] == "eligible", e["eligibility"]
+
+
+def test_non_farmland_cover_is_ineligible(client, as_role):
+    h = as_role("programme_admin")
+    _, _, f = ready_field(client, h)
+    client.patch(f"/api/fields/{f['id']}", headers=h, json={"land_cover": "other"})
+    _, project = mk_project(client, h)
+    e = enrol(client, h, project["id"], f["id"])
+    assert e["status"] == "ineligible" and not checks_of(e)["land_cover"]["passed"]

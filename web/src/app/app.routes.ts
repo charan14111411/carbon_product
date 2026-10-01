@@ -73,6 +73,19 @@ export const routes: Routes = [
       { path: 'partners', loadChildren: () => import('./features/partners/partners.routes') },
 
       { path: 'audit', loadChildren: () => import('./features/audit/audit.routes') },
+      { path: 'portfolio', loadChildren: () => import('./features/portfolio/portfolio.routes') },
+      { path: 'households', loadChildren: () => import('./features/households/households.routes') },
+      { path: 'interventions', loadChildren: () => import('./features/interventions/interventions.routes') },
+      { path: 'baseline', loadChildren: () => import('./features/baseline/baseline.routes') },
+      { path: 'additionality', loadChildren: () => import('./features/additionality/additionality.routes') },
+      { path: 'control-sites', loadChildren: () => import('./features/control-sites/control-sites.routes') },
+      { path: 'emissions', loadChildren: () => import('./features/emissions/emissions.routes') },
+      { path: 'offtake', loadChildren: () => import('./features/offtake/offtake.routes') },
+      { path: 'notifications', loadChildren: () => import('./features/notifications/notifications.routes') },
+      { path: 'documents', loadChildren: () => import('./features/documents/documents.routes') },
+      { path: 'qa1', loadChildren: () => import('./features/qa1/qa1.routes') },
+      { path: 'biomass', loadChildren: () => import('./features/biomass/biomass.routes') },
+      { path: 'leakage', loadChildren: () => import('./features/leakage/leakage.routes') },
 
     ],
 

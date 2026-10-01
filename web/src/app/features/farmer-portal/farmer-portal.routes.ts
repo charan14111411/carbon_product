@@ -1,5 +1,6 @@
 import { Routes } from '@angular/router';
 import { FarmerConsents, FarmerFields, FarmerHelp, FarmerHome, FarmerPaymentDetails, FarmerPayments } from './farmer-pages';
+import { FarmerPlan } from './farmer-plan';
 import { FarmerShell } from './farmer-shell';
 
 const T = ' · Varsapradaya Carbon';
@@ -11,6 +12,7 @@ export default [
     children: [
       { path: '', component: FarmerHome, title: 'Home' + T },
       { path: 'fields', component: FarmerFields, title: 'My fields' + T },
+      { path: 'plan', component: FarmerPlan, title: 'My plan' + T },
       { path: 'payments', component: FarmerPayments, title: 'My payments' + T },
       { path: 'payment-details', component: FarmerPaymentDetails, title: 'Payment details' + T },
       { path: 'consents', component: FarmerConsents, title: 'My consents' + T },

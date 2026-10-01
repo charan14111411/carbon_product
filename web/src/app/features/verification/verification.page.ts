@@ -42,7 +42,7 @@ import { Integrity, Package } from './verification.types';
           <div class="table-wrap">
             <table class="table">
               <thead><tr>
-                <th>Package</th><th>Period and contents</th><th class="num">Net credits</th><th>Fingerprint</th>
+                <th>Package</th><th>Period and contents</th><th class="num">VCUs</th><th>Fingerprint</th>
                 <th>Issued</th><th>Integrity</th><th class="num">Download</th>
               </tr></thead>
               <tbody>

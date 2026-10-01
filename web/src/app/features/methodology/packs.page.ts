@@ -1,5 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
-import { Router } from '@angular/router';
+import { ActivatedRoute, Router } from '@angular/router';
+import { toSignal } from '@angular/core/rxjs-interop';
 import { forkJoin, of, catchError } from 'rxjs';
 import { ApiError, ApiService } from '../../core/api.service';
 import { AuthService } from '../../core/auth.service';
@@ -7,13 +8,14 @@ import { DayPipe } from '../../core/format';
 import { ProjectContext } from '../../core/project-context.service';
 import { ToastService } from '../../core/toast.service';
 import { Icon } from '../../ui/icon';
-import { Badge, Empty, ErrorBox, Loading, PageHeader, Progress } from '../../ui/kit';
+import { Badge, Empty, ErrorBox, Loading, PageHeader, Progress, TabItem, Tabs } from '../../ui/kit';
+import { Deviations } from './deviations';
 import { CreatePack } from './create-pack';
 import { PackDetail, PackHead, Readiness } from './methodology-data';
 
 @Component({
   selector: 'vc-packs-page',
-  imports: [PageHeader, Loading, ErrorBox, Empty, Badge, Progress, Icon, CreatePack, DayPipe],
+  imports: [PageHeader, Loading, ErrorBox, Empty, Badge, Progress, Icon, CreatePack, DayPipe, Tabs, Deviations],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <vc-page-header title="Methodology rules" eyebrow="Measurement · Gate 0"
@@ -23,6 +25,11 @@ import { PackDetail, PackHead, Readiness } from './methodology-data';
       }
     </vc-page-header>
 
+    <vc-tabs [tabs]="tabs" [active]="tab()" (activeChange)="setTab($event)" />
+
+    @if (tab() === 'deviations') {
+      <vc-deviations />
+    } @else {
     @if (projectPack(); as pp) {
       <div class="assigned card">
         <span class="ic"><vc-icon name="briefcase" [size]="16" /></span>
@@ -78,6 +85,7 @@ import { PackDetail, PackHead, Readiness } from './methodology-data';
         </ul>
       }
     </section>
+    }
 
     <vc-create-pack [(open)]="createOpen" [packs]="packs()" (created)="onCreated($event)" />
   `,
@@ -106,7 +114,11 @@ import { PackDetail, PackHead, Readiness } from './methodology-data';
 export class PacksPage {
   private api = inject(ApiService);
   private router = inject(Router);
+  private route = inject(ActivatedRoute);
   private toast = inject(ToastService);
+  private qp = toSignal(this.route.queryParamMap, { initialValue: this.route.snapshot.queryParamMap });
+  tab = computed(() => (this.qp().get('tab') === 'deviations' ? 'deviations' : 'packs'));
+  tabs: TabItem[] = [{ key: 'packs', label: 'Rule packs' }, { key: 'deviations', label: 'Interpretations & deviations' }];
   auth = inject(AuthService);
   ctx = inject(ProjectContext);
 
@@ -157,6 +169,7 @@ export class PacksPage {
   }
 
   open(id: string) { this.router.navigate(['/app/methodology', id]); }
+  setTab(t: string) { this.router.navigate([], { relativeTo: this.route, queryParams: { tab: t === 'packs' ? null : t }, queryParamsHandling: 'merge' }); }
 
   onCreated(p: PackDetail) {
     this.toast.success(`${p.label} created`, 'Enter each value with its source, then ask a colleague to approve.');

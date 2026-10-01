@@ -288,3 +288,60 @@ def delivered_sale(client, h: dict, batch_id: str, buyer_id: str, quantity: floa
     if retire:
         d = client.post(f"/api/sales/{sid}/retire", headers=h, json={"beneficiary": "Acme Foods Ltd"})
     return d.json()
+
+
+# ------------------------------------------------------------------ supporting observations (derived features / feature store)
+def observation(s, org, fld: Field, parameter: str, day: date, value: float, *, tier: int = 1,
+                provider: str = "soilsync", quality: float = 1.0, data_class: str = "MEASURED",
+                unit: str = "") -> Any:
+    from app.modules.supporting.models import Observation
+
+    o = Observation(org_id=org, field_id=fld.id, parameter=parameter, observed_on=day, value=value, unit=unit,
+                    tier=tier, provider=provider, quality=quality, data_class=data_class)
+    s.add(o)
+    s.flush()
+    return o
+
+
+def daily_observations(s, org, fld: Field, parameter: str, start: date, values: list[float], **kw) -> None:
+    for i, v in enumerate(values):
+        observation(s, org, fld, parameter, start + timedelta(days=i), v, **kw)
+
+
+# ------------------------------------------------------------------ helpers for interventions / notifications / documents
+def consent(s, org, farmer_id, purpose: str = "data_use", granted: bool = True,
+            effective_on: date | None = None):
+    from app.modules.consent.models import ConsentEvent
+
+    ev = ConsentEvent(org_id=org, farmer_id=farmer_id, purpose=purpose, granted=granted,
+                      effective_on=effective_on or date(2024, 1, 1), channel="app")
+    s.add(ev)
+    s.flush()
+    return ev
+
+
+def evidence(s, org, text: str | None = None, filename: str = "doc.pdf", mime: str = "application/pdf"):
+    from app.modules.evidence.models import EvidenceFile
+
+    body = text or f"document {_n()}"
+    ev = EvidenceFile(org_id=org, sha256=sha(body), kind="document", filename=filename, mime_type=mime,
+                      size_bytes=len(body), storage_key=f"test/{sha(body)}")
+    s.add(ev)
+    s.flush()
+    return ev
+
+
+def evidence_id(org, text: str | None = None) -> str:
+    with session() as s:
+        ev = evidence(s, org, text)
+        s.commit()
+        return str(ev.id)
+
+
+def set_phone(farmer_id, phone: str, language: str | None = None) -> None:
+    with session() as s:
+        f = s.get(Farmer, farmer_id)
+        f.phone = phone
+        if language:
+            f.language = language
+        s.commit()

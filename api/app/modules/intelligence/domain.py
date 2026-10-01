@@ -15,6 +15,18 @@ import numpy as np
 
 Series = list[tuple[date, float]]
 
+# ------------------------------------------------------------------ informing wall
+INFORMING_WALL_REASON = ("VM0042 v2.2 Appendix 4 fn.59 / §8.2.1.4: remote-sensing SOC only via VT0014 "
+                         "digital soil mapping")
+
+
+def wall(data_class: str, reason: str | None = None) -> dict[str, Any]:
+    """Labels every intelligence output: what kind of value it is and that it is not creditable.
+    Intelligence informs sampling, QA and context; credited SOC comes only from measured lab results
+    (or a VT0014-validated digital soil map, which this platform does not implement)."""
+    return {"data_class": data_class, "credit_eligible": False,
+            "credit_eligible_reason": reason or INFORMING_WALL_REASON}
+
 # ------------------------------------------------------------------ practice heuristics
 COVER_CROP_NDVI = 0.35
 BARE_SOIL_NDVI = 0.15

@@ -3,7 +3,7 @@ import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { ApiError, ApiService } from '../../core/api.service';
 import { AuthService } from '../../core/auth.service';
-import { DayPipe, HumanPipe, NumPipe, fmtDate } from '../../core/format';
+import { DayPipe, NumPipe, fmtDate } from '../../core/format';
 import { ToastService } from '../../core/toast.service';
 import { Chart } from '../../ui/chart';
 import { Icon } from '../../ui/icon';
@@ -12,8 +12,10 @@ import {
 } from '../../ui/kit';
 import { CalcBlocker } from './blocker';
 import { EvidenceBrief, Provenance, RunDetail, StratumResult, TERM_STATUS, openBlob, ruleSource, ruleValue, termLabel } from './calc.types';
+import { MultistagePanel } from './multistage-panel';
 import { ProvenanceTree } from './provenance-tree';
 import { waterfallOption, waterfallSteps } from './waterfall';
+import { EmissionsPanel, EquationTrail, LeakagePanel, RunNotices, UncertaintyPanel, VcuSummary, ZonesTable } from './vm0042-panels';
 
 type Action = 'submit' | 'approve' | 'reject' | 'package' | null;
 
@@ -21,7 +23,8 @@ type Action = 'submit' | 'approve' | 'reject' | 'package' | null;
   selector: 'vc-run-detail',
   imports: [
     FormsModule, RouterLink, PageHeader, Icon, Badge, DataClass, Hash, Loading, ErrorBox, Callout, Modal, Tabs, Timeline,
-    Chart, ProvenanceTree, CalcBlocker, NumPipe, DayPipe, HumanPipe,
+    Chart, ProvenanceTree, CalcBlocker, NumPipe, DayPipe,
+    EquationTrail, VcuSummary, UncertaintyPanel, EmissionsPanel, LeakagePanel, ZonesTable, RunNotices, MultistagePanel,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
@@ -78,13 +81,13 @@ type Action = 'submit' | 'approve' | 'reject' | 'package' | null;
         <vc-callout tone="danger" icon="trend-down" class="flag">
           <strong>Soil carbon did not increase over this period.</strong>
           The net result before uncertainty is {{ r.results.net_before_uncertainty_t_co2e | num: 1 }} tCO₂e. It is reported exactly as measured — never
-          rounded up to zero — and no credits arise. No uncertainty deduction or buffer is applied to a loss.
+          rounded up to zero. Because the project did worse than the baseline, the uncertainty multiplier makes the loss larger (Eq. 44/45), and no buffer is released.
         </vc-callout>
       }
       @if (r.results.flags['high_uncertainty']) {
         <vc-callout tone="warn" icon="alert" class="flag">
-          <strong>High uncertainty.</strong> The uncertainty deduction is {{ deductionPct() | num: 1 }}% of the result before uncertainty (the review threshold is 15%).
-          More sampling sites per zone would narrow it and release more credits.
+          <strong>High uncertainty.</strong> Uncertainty reduces the result by {{ deductionPct() | num: 1 }} % (the review threshold is 15 %).
+          More sampling sites per zone would narrow it and release more credits. See the Uncertainty tab.
         </vc-callout>
       }
       @if (r.results.flags['unpaired_sites_excluded']) {
@@ -98,38 +101,20 @@ type Action = 'submit' | 'approve' | 'reject' | 'package' | null;
 
       @switch (tab()) {
         @case ('result') {
-          <div class="hero">
-            <div class="net card">
-              <div class="nl">Net credits <vc-dc cls="CALCULATED" /></div>
-              <div class="nv num" [class.neg]="r.net_t_co2e < 0">{{ r.net_t_co2e | num: 1 }}<span>tCO₂e</span></div>
-              <div class="ns">After a {{ r.uncertainty_deduction_t_co2e | num: 1 }} t uncertainty deduction and a {{ r.buffer_t_co2e | num: 1 }} t buffer contribution.</div>
-            </div>
-            <div class="card split">
-              <div class="sh"><span>Reductions vs removals</span><vc-dc cls="CALCULATED" /></div>
-              @if (splitTotal() > 0) {
-                <div class="sbar">
-                  <span class="er" [style.flex-grow]="r.reductions_t_co2e"></span>
-                  <span class="cr" [style.flex-grow]="r.removals_t_co2e"></span>
-                </div>
-              }
-              <div class="sg">
-                <div><span class="sw er"></span><div><strong class="num">{{ r.reductions_t_co2e | num: 1 }} t</strong><span>Emission reductions</span><small>Avoided emissions and prevented losses</small></div></div>
-                <div><span class="sw cr"></span><div><strong class="num">{{ r.removals_t_co2e | num: 1 }} t</strong><span>Carbon removals</span><small>New carbon stored in the soil</small></div></div>
-              </div>
-            </div>
-          </div>
+          <vc-run-notices [r]="r.results" />
+          <vc-vcu-summary [r]="r.results" />
 
           <section class="card">
-            <div class="card-head"><h3>From measured change to credits</h3><vc-dc cls="CALCULATED" /></div>
+            <div class="card-head"><h3>From soil-carbon change to VCUs</h3><vc-dc cls="CALCULATED" /><span class="subtle small">Period totals, tCO₂e · each bar carries its VM0042 v2.2 equation</span></div>
             <div class="wf">
-              <vc-chart [option]="wfOption()" height="320px" />
+              <vc-chart [option]="wfOption()" height="340px" />
               <table class="table steps">
                 <tbody>
                   @for (s of wfSteps(); track s.key) {
-                    <tr [class.tot]="s.kind === 'start' || s.kind === 'end'">
-                      <td><span class="sw" [class]="'sw w-' + s.kind"></span>{{ s.label }}</td>
+                    <tr [class.tot]="s.kind === 'start' || s.kind === 'end'" [class.sub]="s.kind === 'sub'">
+                      <td><span class="sw" [class]="'sw w-' + s.kind"></span>{{ s.label }}<div class="eqs">{{ s.eq }}</div></td>
                       <td class="num nowrap">
-                        @if (s.kind === 'start' || s.kind === 'end') { <strong>{{ s.total | num: 1 }}</strong> }
+                        @if (s.kind === 'start' || s.kind === 'end' || s.kind === 'sub') { <strong>{{ s.total | num: 1 }}</strong> }
                         @else { {{ s.delta >= 0 ? '+' : '−' }}{{ abs(s.delta) | num: 1 }} }
                         <span class="u">t</span>
                       </td>
@@ -140,95 +125,81 @@ type Action = 'submit' | 'approve' | 'reject' | 'package' | null;
             </div>
           </section>
 
-          <div class="grid grid-2 two">
-            <section class="card">
-              <div class="card-head"><h3>How the uncertainty deduction was set</h3></div>
-              <div class="card-body unc">
-                @if (r.results.t_value !== null) {
-                  <p>
-                    The measured result carries sampling error. Combining the variance of every zone and every decided term gives a
-                    <strong>standard error of {{ r.results.se_t_co2e | num: 1 }} tCO₂e</strong>, with
-                    <strong>{{ r.results.df_effective | num: 1 }} effective degrees of freedom</strong>.
-                  </p>
-                  <p>
-                    To be {{ r.results.confidence * 100 | num: 0 }}% confident that credits are not over-stated, the engine uses the one-sided
-                    Student-t value for those degrees of freedom, <strong>t = {{ r.results.t_value | num: 3 }}</strong>, and deducts
-                    t × SE = <strong>{{ r.results.uncertainty_deduction_t_co2e | num: 1 }} tCO₂e</strong>
-                    ({{ deductionPct() | num: 1 }}% of the {{ r.results.net_before_uncertainty_t_co2e | num: 1 }} t result before uncertainty).
-                  </p>
+          @if (r.results.soc; as soc) {
+            <div class="grid grid-2 two">
+              <section class="card">
+                <div class="card-head"><h3>Soil-carbon stock change</h3><vc-dc [cls]="soc.approach === 'qa1' ? 'MODELLED' : 'MEASURED'" /></div>
+                <div class="card-body">
                   <dl class="kv">
-                    <dt>Total variance</dt><dd class="num">{{ r.results.total_variance | num: 1 }} (tCO₂e)²</dd>
-                    <dt>Standard error (SE)</dt><dd class="num">{{ r.results.se_t_co2e | num: 2 }} tCO₂e</dd>
-                    <dt>Degrees of freedom</dt><dd class="num">{{ r.results.df_effective | num: 2 }} (Welch–Satterthwaite)</dd>
-                    <dt>Confidence</dt><dd class="num">{{ r.results.confidence * 100 | num: 1 }}% one-sided</dd>
-                    <dt>t value</dt><dd class="num">{{ r.results.t_value | num: 4 }}</dd>
-                    <dt>Deduction</dt><dd class="num"><strong>{{ r.results.uncertainty_deduction_t_co2e | num: 2 }} tCO₂e</strong></dd>
+                    <dt>Approach</dt><dd>{{ soc.approach === 'qa1' ? 'QA1 — validated model with true-up' : 'QA2 — measure and re-measure' }}; {{ soc.stock_method === 'esm' ? 'equivalent soil mass' : 'fixed depth with mass correction' }} to {{ soc.reporting_depth_cm | num: 0 }} cm</dd>
+                    @if (soc.measurement_interval_years !== null) { <dt>Between measurements</dt><dd class="num">{{ soc.measurement_interval_years | num: 2 }} years · credited {{ soc.credited_years | num: 2 }} of {{ soc.period_years | num: 2 }} period years</dd> }
+                    <dt>Project ΔCO₂ soil</dt><dd class="num">{{ soc.soil_wp_t_co2e | num: 2 }} t <span class="eqr">Eq. 47</span></dd>
+                    @if (soc.biochar_t_co2e) { <dt>Biochar subtracted</dt><dd class="num">−{{ soc.biochar_t_co2e | num: 2 }} t <span class="eqr">§4 cond. 7</span></dd> }
+                    <dt>Baseline ΔCO₂ soil</dt><dd class="num">{{ soc.soil_bsl_t_co2e | num: 2 }} t <span class="eqr">Eq. 46</span> <span class="subtle">· {{ socSource(soc.source) }}</span></dd>
+                    @if (soc.tree_wp_t_co2e || soc.tree_bsl_t_co2e) { <dt>Trees and shrubs</dt><dd class="num">project {{ soc.tree_wp_t_co2e | num: 2 }} t · baseline {{ soc.tree_bsl_t_co2e | num: 2 }} t</dd> }
+                    <dt>Uncertainty multiplier</dt><dd class="num">× {{ soc.multiplier | num: 4 }} (UNC {{ soc.unc_co2 * 100 | num: 2 }} %, I<sub>soil</sub> {{ soc.i_soil > 0 ? '+1' : '−1' }})</dd>
+                    <dt>After uncertainty</dt><dd class="num">project <strong>{{ soc.d_wp_t_co2e | num: 2 }}</strong> · baseline <strong>{{ soc.d_bsl_t_co2e | num: 2 }}</strong> t <span class="eqr">Eq. 45 / 44</span></dd>
                   </dl>
-                } @else {
-                  <p>No uncertainty deduction applies: the result is not positive, so there is nothing to over-state. The loss is reported as measured.</p>
-                }
-              </div>
+                </div>
+              </section>
+              <section class="card">
+                <div class="card-head"><h3>Decided terms used</h3></div>
+                <div class="table-wrap">
+                  <table class="table">
+                    <thead><tr><th>Term</th><th class="num">Value</th><th>Used as</th><th>Status</th></tr></thead>
+                    <tbody>
+                      @for (t of usedTerms(); track t.term) {
+                        <tr>
+                          <td>{{ termLabel(t.term) }}@if (t.data_class) { <vc-dc [cls]="t.data_class" class="tdc" /> }</td>
+                          <td class="num nowrap">{{ t.value_t_co2e | num: 2 }} <span class="u">t</span></td>
+                          <td class="mono small">{{ t.used_as || '—' }}</td>
+                          <td class="small muted">{{ termStatus(t.status) }}</td>
+                        </tr>
+                      } @empty { <tr><td colspan="4" class="muted small">No approved project terms were needed for this run.</td></tr> }
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
+            @if (soc.multistage; as ms) { <div class="two"><vc-multistage-panel [m]="ms" /></div> }
+          }
+        }
+
+        @case ('equations') {
+          <section class="card">
+            <div class="card-head"><h3>Equation trail</h3><vc-dc cls="CALCULATED" /><span class="subtle small">Every step the engine took, in order, with its VM0042 v2.2 equation number</span></div>
+            <vc-equation-trail [rows]="r.results.equations ?? []" />
+          </section>
+        }
+
+        @case ('uncertainty') {
+          <section class="card">
+            <div class="card-head"><h3>Uncertainty per source</h3><vc-dc cls="CALCULATED" /><span class="subtle small">VM0042 §8.6 · Eq. 70–74, applied through Eq. 37 and 44/45</span></div>
+            <vc-uncertainty-panel [r]="r.results" />
+          </section>
+        }
+
+        @case ('emissions') {
+          <section class="card">
+            <div class="card-head"><h3>Emissions: baseline vs project</h3><vc-dc cls="CALCULATED" /><span class="subtle small">Default factors (QA3), Eq. 6–32 and 52–59</span></div>
+            <vc-emissions-panel [r]="r.results" />
+          </section>
+          @if (r.results.leakage; as lk) {
+            <section class="card two">
+              <div class="card-head"><h3>Leakage</h3><vc-dc cls="CALCULATED" /><span class="subtle small">§8.4 · total {{ lk.total_t_co2e | num: 3 }} tCO₂e</span></div>
+              <vc-leakage-panel [items]="lk.le_oa_items" [leOa]="lk.le_oa_t_co2e" [leBr]="lk.le_br_t_co2e || null" [lkDisp]="lk.lk_disp_t_co2e || null"
+                [other]="lk.other_t_co2e || null" [allocation]="{ er: lk.lk_er_t_co2e, cr: lk.lk_cr_t_co2e }" [names]="fieldNames()" />
             </section>
-            <section class="card">
-              <div class="card-head"><h3>Decided terms used</h3></div>
-              <div class="table-wrap">
-                <table class="table">
-                  <thead><tr><th>Term</th><th class="num">Value</th><th class="num">Variance</th><th>How used</th></tr></thead>
-                  <tbody>
-                    @for (t of r.results.terms; track t.term) {
-                      <tr>
-                        <td>{{ termLabel(t.term) }}</td>
-                        <td class="num nowrap">{{ t.value_t_co2e | num: 2 }} <span class="u">t</span></td>
-                        <td class="num">{{ t.variance | num: 2 }}</td>
-                        <td class="small muted">{{ termStatus(t.status) }}</td>
-                      </tr>
-                    }
-                  </tbody>
-                </table>
-              </div>
-              <div class="card-body buf small muted">
-                Non-permanence buffer: {{ r.results.non_permanence_risk_pct | num: 1 }}% of the result after uncertainty is held back in the pooled buffer
-                against future reversal ({{ r.buffer_t_co2e | num: 1 }} tCO₂e).
-              </div>
-            </section>
-          </div>
+          }
         }
 
         @case ('zones') {
           <section class="card">
-            <div class="card-head"><h3>Result per zone</h3><vc-dc cls="CALCULATED" /><span class="subtle small">Stocks in t C/ha to the required depth ({{ stockMethod() }})</span></div>
-            <div class="table-wrap">
-              <table class="table">
-                <thead><tr>
-                  <th>Zone</th><th>Role</th><th class="num">Area</th><th class="num">n used</th>
-                  <th class="num">Baseline <span class="thu">t C/ha</span></th><th class="num">Monitoring <span class="thu">t C/ha</span></th><th class="num">Change <span class="thu">t C/ha</span></th>
-                  <th class="num">Variance</th><th class="num">SE</th><th class="num">df</th><th>Excluded sites</th>
-                </tr></thead>
-                <tbody>
-                  @for (s of zones(); track s.code) {
-                    <tr>
-                      <td><strong>{{ s.code }}</strong><div class="subtle small">{{ zoneName(s.code) }}</div></td>
-                      <td>
-                        {{ s.role | human }}
-                        @if (s.control_code) { <div class="subtle small">netted against {{ s.control_code }}</div> }
-                      </td>
-                      <td class="num nowrap">{{ s.area_ha | num: 1 }} <span class="u">ha</span></td>
-                      <td class="num">{{ s.n_used }}<div class="subtle small">{{ s.n_baseline }} / {{ s.n_monitoring }}</div></td>
-                      <td class="num nowrap">{{ s.mean_baseline_t_c_ha | num: 2 }}</td>
-                      <td class="num nowrap">{{ s.mean_monitoring_t_c_ha | num: 2 }}</td>
-                      <td class="num nowrap"><strong [class.neg]="s.delta_t_c_ha < 0">{{ s.delta_t_c_ha >= 0 ? '+' : '' }}{{ s.delta_t_c_ha | num: 3 }}</strong></td>
-                      <td class="num">{{ s.variance | num: 4 }}</td>
-                      <td class="num">{{ s.se | num: 3 }}</td>
-                      <td class="num">{{ s.df | num: 1 }}</td>
-                      <td>@if (s.excluded_sites.length) { <span class="exc" [title]="s.excluded_sites.join(', ')">{{ s.excluded_sites.length }} site(s)</span> } @else { <span class="subtle">None</span> }</td>
-                    </tr>
-                  }
-                </tbody>
-              </table>
-            </div>
+            <div class="card-head"><h3>Result per zone</h3><vc-dc cls="CALCULATED" /><span class="subtle small">Stocks in t C/ha, {{ stockMethod() }} basis</span></div>
+            <vc-zones-table [zones]="zones()" [zoneName]="zoneNameFn" />
             <div class="card-foot foot small muted">
-              n used counts paired sites (paired design) or all cores (independent design); the small figures show baseline / monitoring cores.
-              Area-weighted total: {{ r.results.dsoc_t_c | num: 1 }} t C = {{ r.results.dsoc_t_co2e | num: 1 }} tCO₂e.
+              The ESM reference mass is the heaviest cumulative fine-soil mass to the reporting depth among the compared cores. Eq. 71: s²wp = s²f + s²s − 2·COV, with covariance only for re-visited (paired) points;
+              the control variance s²bsl is added without covariance (Eq. 70). Area-weighted change: {{ r.results.dsoc_t_c | num: 1 }} t C = {{ r.results.dsoc_t_co2e | num: 1 }} tCO₂e.
             </div>
           </section>
         }
@@ -371,7 +342,11 @@ type Action = 'submit' | 'approve' | 'reject' | 'package' | null;
     .wf{display:grid;grid-template-columns:minmax(0,1fr) 280px;gap:8px;padding:12px 12px 12px 16px;align-items:center}
     @media (max-width: 1100px){.wf{grid-template-columns:1fr}}
     .steps td{padding:7px 10px;font-size:13px}
-    .steps tr.tot td{font-weight:500;background:var(--surface-2)}
+    .steps tr.tot td,.steps tr.sub td{font-weight:500;background:var(--surface-2)}
+    .steps .eqs{font:10.5px var(--mono);color:var(--text-3);margin-left:18px}
+    .eqr{font:600 10.5px var(--mono);color:var(--text-3);margin-left:4px}
+    .tdc{margin-left:6px}
+    .w-sub{background:#58625b}
     .steps .sw{margin:0 8px 0 0;vertical-align:-1px}
     .w-start,.w-end{background:#2a4d8f} .w-up{background:var(--forest-500)} .w-down{background:var(--clay-500)}
     .two{margin-top:16px}
@@ -413,7 +388,8 @@ export class RunDetailPage {
   note = '';
 
   tabs: TabItem[] = [
-    { key: 'result', label: 'Result' }, { key: 'zones', label: 'Zones' }, { key: 'inputs', label: 'Rules & inputs' },
+    { key: 'result', label: 'Result' }, { key: 'equations', label: 'Equations' }, { key: 'uncertainty', label: 'Uncertainty' },
+    { key: 'emissions', label: 'Emissions & leakage' }, { key: 'zones', label: 'Zones' }, { key: 'inputs', label: 'Rules & inputs' },
     { key: 'provenance', label: 'Provenance' }, { key: 'history', label: 'History' },
   ];
 
@@ -424,7 +400,7 @@ export class RunDetailPage {
   splitTotal = computed(() => Math.max(0, this.run()?.reductions_t_co2e ?? 0) + Math.max(0, this.run()?.removals_t_co2e ?? 0));
   deductionPct = computed(() => {
     const r = this.run()?.results;
-    return r && r.net_before_uncertainty_t_co2e > 0 ? (100 * r.uncertainty_deduction_t_co2e) / r.net_before_uncertainty_t_co2e : 0;
+    return r && r.gross_t_co2e > 0 ? (100 * r.uncertainty_deduction_t_co2e) / r.gross_t_co2e : 0;
   });
   zones = computed<StratumResult[]>(() => [...(this.run()?.results.strata ?? []), ...(this.run()?.results.control_strata ?? [])]);
   rules = computed(() => {
@@ -497,6 +473,13 @@ export class RunDetailPage {
   abs(v: number) { return Math.abs(v); }
   count(o: object | null | undefined) { return Object.keys(o ?? {}).length; }
   zoneName(code: string) { return this.run()?.inputs_snapshot.sources.strata.find(s => s.code === code)?.name ?? ''; }
+  zoneNameFn = (code: string) => this.zoneName(code);
+  fieldNames = signal<Record<string, string>>({});
+  fieldName = (id: string) => this.fieldNames()[id] ?? id.slice(0, 8);
+  usedTerms = computed(() => (this.run()?.results.terms ?? []).filter(t => t.status === 'supplied' || t.status === 'measured_at_control_sites'));
+  socSource(s: string) {
+    return ({ measured_at_control_sites: 'measured at control sites', modelled_baseline_term: 'approved model estimate', qa1_model: 'QA1 model' } as Record<string, string>)[s] ?? s.replace(/_/g, ' ');
+  }
 
   constructor() {
     effect(() => { if (this.id()) this.load(); });
@@ -508,8 +491,15 @@ export class RunDetailPage {
     this.error.set(null);
     this.prov.set(null);
     this.api.get<RunDetail>(`/calculations/${this.id()}`).subscribe({
-      next: r => { this.run.set(r); this.loading.set(false); },
+      next: r => { this.run.set(r); this.loading.set(false); this.loadFields(r.project_id); },
       error: (e: ApiError) => { this.error.set(e.message); this.loading.set(false); },
+    });
+  }
+
+  private loadFields(projectId: string) {
+    this.api.get<{ items: { id: string; code: string; name: string }[] }>('/fields', { project_id: projectId, limit: 500 }).subscribe({
+      next: p => this.fieldNames.set(Object.fromEntries(p.items.map(f => [f.id, `${f.code} · ${f.name}`]))),
+      error: () => undefined,
     });
   }
 

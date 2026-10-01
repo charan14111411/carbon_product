@@ -91,3 +91,48 @@ class Payout(TenantModel):
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class PaymentAttempt(LedgerModel):
+    """Every hand-over of a payout to the provider and its answer. Append-only."""
+
+    __tablename__ = "payment_attempts"
+    payout_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("payouts.id"), index=True)
+    batch_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("payout_batches.id"), index=True)
+    attempt_no: Mapped[int] = mapped_column(Integer)
+    provider: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    provider_ref: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    amount: Mapped[float] = mapped_column(Numeric(14, 2))
+    currency: Mapped[str] = mapped_column(String(3), default="INR")
+    status: Mapped[str] = mapped_column(String(12))  # paid | failed
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ReconciliationRun(TenantModel):
+    """One provider settlement statement matched against a batch's payment attempts."""
+
+    __tablename__ = "reconciliation_runs"
+    batch_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("payout_batches.id"), index=True)
+    statement_evidence_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("evidence_files.id"))
+    statement_sha256: Mapped[str] = mapped_column(String(64))
+    rows: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(20))  # reconciled | mismatches
+    counts: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class ReconciliationItem(LedgerModel):
+    """One matching outcome. Append-only; a fresh statement means a new run."""
+
+    __tablename__ = "reconciliation_items"
+    run_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("reconciliation_runs.id"), index=True)
+    batch_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("payout_batches.id"), index=True)
+    payout_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey("payouts.id"), nullable=True)
+    provider_ref: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    row_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    expected_amount: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
+    statement_amount: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
+    statement_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    outcome: Mapped[str] = mapped_column(String(30))
+    # matched | amount_mismatch | status_mismatch | missing_in_statement | unknown_ref | duplicate_in_statement
+    # | duplicate_payment
+    note: Mapped[str] = mapped_column(Text, default="")

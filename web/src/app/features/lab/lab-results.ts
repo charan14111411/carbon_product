@@ -58,9 +58,12 @@ const PAGE = 100;
               @for (r of rows(); track r.id) {
                 <tr class="clickable" (click)="open.set(r)">
                   <td class="nowrap"><code>{{ r.bag_code }}</code></td>
-                  <td class="nowrap">{{ label(r.analyte) }} @if (r.version > 1) { <span class="subtle small">v{{ r.version }}</span> }</td>
-                  <td class="num nowrap"><strong>{{ r.value | num: 3 }}</strong>&ngsp;<span class="subtle">{{ r.unit }}</span>&ngsp;<vc-dc [cls]="r.data_class" /></td>
-                  <td class="muted nowrap">{{ r.method | human }}</td>
+                  <td class="nowrap">{{ label(r.analyte) }} @if (r.version > 1) { <span class="subtle small">v{{ r.version }}</span> }
+                    @if (r.purpose === 'spectroscopy_check') { <div><span class="flag f-info" title="Dry-combustion re-run of a spectroscopy bag (Eq. 73)">Spectroscopy check</span></div> }</td>
+                  <td class="num nowrap"><strong>{{ r.value | num: 3 }}</strong>&ngsp;<span class="subtle">{{ r.unit }}</span>&ngsp;<vc-dc [cls]="r.data_class" />
+                    @if (r.below_detection_limit) { <div><span class="flag f-warn" [title]="'Below the detection limit of ' + r.detection_limit + ' ' + r.unit">&lt; detection limit {{ r.detection_limit | num: 3 }}</span></div> }</td>
+                  <td class="muted nowrap">{{ r.method | human }}
+                    @if (!r.method_recommended) { <div><span class="flag f-warn" title="Not recommended by VM0042 §8.2.1.4; only where no other method is available">Not recommended</span></div> }</td>
                   <td class="nowrap">{{ r.analysed_on | day }}</td>
                   <td>
                     @if (r.certificate_id) {
@@ -101,6 +104,8 @@ const PAGE = 100;
     .lk{color:var(--stone-500);margin-left:6px;vertical-align:middle}
     td .subtle.small{display:inline-flex;align-items:center;gap:4px}
     .pager{justify-content:flex-start}
+    .flag{display:inline-flex;align-items:center;height:18px;margin-top:3px;padding:0 6px;border-radius:4px;font-size:11px;font-weight:500;white-space:nowrap}
+    .f-warn{background:var(--amber-100);color:var(--amber-600)} .f-info{background:var(--sky-100);color:var(--sky-600)}
   `],
 })
 export class LabResults {

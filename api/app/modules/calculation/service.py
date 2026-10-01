@@ -7,6 +7,7 @@ Every input to a run is read from the database here and frozen into the run's
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import uuid
@@ -14,9 +15,10 @@ from collections import defaultdict
 from datetime import date
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, inspect, or_, select
 from sqlalchemy.orm import Session
 
+from app.core import geo
 from app.core.auth import CurrentUser, ensure_not_author
 from app.core.config import get_settings
 from app.core.db import utcnow
@@ -26,6 +28,8 @@ from app.core.tenancy import audit, get_owned, scoped
 from app.modules.calculation import engine
 from app.modules.calculation.models import CalculationRun, Claim, RunStatusEvent, TermEstimate
 from app.modules.calculation.schemas import RunIn, TermIn, TermOut
+from app.modules.emissions import domain as emissions_domain
+from app.modules.emissions import service as emissions_svc
 from app.modules.evidence.models import EvidenceFile
 from app.modules.identity.models import User
 from app.modules.lab.models import LabResult
@@ -35,11 +39,14 @@ from app.modules.methodology.definitions import BY_KEY
 from app.modules.methodology.models import RulePack
 from app.modules.programmes.models import Project
 from app.modules.qa.models import QAFinding
+from app.modules.sampling import service as sampling_svc
 from app.modules.sampling.models import (
     Campaign, CustodyEvent, Sample, SamplePlan, SamplingPoint, Site, SoilLayer, Stratum,
 )
 
 REQUIRED_ANALYTES = ("soc_pct", "bulk_density_g_cm3")
+# Spectroscopy dry-combustion check results (purpose "spectroscopy_check") never feed the stock calculation.
+_PRIMARY = or_(LabResult.purpose == "primary", LabResult.purpose.is_(None))
 POOL = "soc"
 # An acknowledged blocking finding still blocks (same rule as the QA module): only fixing the data clears it.
 BLOCKING_STATUSES = ("open", "acknowledged")
@@ -207,19 +214,94 @@ def _effective(s: Stratum, on: date) -> bool:
     return s.effective_from <= on and (s.effective_to is None or s.effective_to > on)
 
 
+def _mean_date(samples: list[Sample]) -> float | None:
+    if not samples:
+        return None
+    return sum(s.collected_at.timestamp() for s in samples) / len(samples)
+
+
+def _prior_cumulative(db: Session, project: Project, period_start: date) -> tuple[float, list[str]]:
+    """Σ ΔCO2_wp credited by earlier approved runs (indicator I of Eq. 37/40 is cumulative)."""
+    runs = db.scalars(select(CalculationRun).where(
+        CalculationRun.org_id == project.org_id, CalculationRun.project_id == project.id,
+        CalculationRun.period_end < period_start)).all()
+    total, used = 0.0, []
+    for r in runs:
+        if run_status(db, r.id) != "approved":
+            continue
+        soc = (r.results or {}).get("soc") or {}
+        if isinstance(soc.get("d_wp_t_co2e"), (int, float)):
+            total += float(soc["d_wp_t_co2e"])
+            used.append(str(r.id))
+    return total, used
+
+
+def _control_site_gates(db: Session, rules: rs.RuleSet, current: list[Stratum]) -> dict[str, Any]:
+    """VM0042 §8.2: ≥ min control sites across the project, ≥ 1 per stratum, within the maximum distance."""
+    controls = [s for s in current if s.role == "control"]
+    projects = [s for s in current if s.role == "project"]
+    if not controls:
+        return {"control_sites": 0}
+    min_sites = int(rules.require("min_control_sites"))
+    max_km = float(rules.require("control_site_max_km"))
+    ctrl_fields = sorted({str(f) for c in controls for f in (c.field_ids or [])})
+    if len(ctrl_fields) < min_sites:
+        raise Blocked(f"The project has {len(ctrl_fields)} baseline control site(s); VM0042 §8.2 requires at least "
+                      f"{min_sites}.", code="CONTROL_SITES_INSUFFICIENT",
+                      details={"rule_key": "min_control_sites", "control_sites": len(ctrl_fields), "required": min_sites})
+    linked = {c.control_for_code for c in controls}
+    missing = sorted(p.code for p in projects if p.code not in linked)
+    if missing:
+        raise Blocked("Every stratum needs at least one baseline control site (VM0042 §8.2).",
+                      code="CONTROL_SITES_INSUFFICIENT", details={"strata_without_control": missing})
+    all_ids = [uuid.UUID(f) for s in current for f in (s.field_ids or [])]
+    fields = {str(f.id): f for f in db.scalars(select(Field).where(Field.id.in_(all_ids))).all()} if all_ids else {}
+    too_far = []
+    for c in controls:
+        target = next((p for p in projects if p.code == c.control_for_code), None)
+        if target is None:
+            continue
+        pf = [fields[str(f)] for f in (target.field_ids or []) if str(f) in fields]
+        for cf_id in c.field_ids or []:
+            cf = fields.get(str(cf_id))
+            if cf is None or not pf:
+                continue
+            km = min(geo.distance_m(cf.centroid_lat, cf.centroid_lon, f.centroid_lat, f.centroid_lon) for f in pf) / 1000
+            if km > max_km:
+                too_far.append({"control_field": cf.code, "stratum": target.code, "km": round(km, 1)})
+    if too_far:
+        raise Blocked(f"Some control sites are more than {max_km:g} km from their quantification unit.",
+                      code="CONTROL_SITE_TOO_FAR", details={"rule_key": "control_site_max_km", "sites": too_far})
+    return {"control_sites": len(ctrl_fields), "max_km": max_km}
+
+
 def assemble_inputs(
     db: Session, project: Project, base: Campaign, mon: Campaign, rules: rs.RuleSet, period_label: str,
+    period_start: date | None = None, period_end: date | None = None,
 ) -> tuple[engine.EngineInput, dict[str, Any]]:
-    """Read every engine input from the database. Returns the engine input and a
-    ``sources`` map recording which rows each value came from."""
+    """Read every engine input from the database and apply the VM0042 gate checks. Returns the engine
+    input and a ``sources`` map recording which rows each value came from."""
     org = project.org_id
     on = mon.planned_start
+    period_start = period_start or base.planned_start
+    period_end = period_end or mon.planned_end
     all_strata = db.scalars(select(Stratum).where(Stratum.org_id == org, Stratum.project_id == project.id)).all()
     current = sorted((s for s in all_strata if _effective(s, on)), key=lambda s: s.code)
     if not current:
         raise Blocked(f"No zones are in effect on {on.isoformat()} (the monitoring campaign start).", code="NO_STRATA")
     code_of = {s.id: s.code for s in all_strata}
     current_codes = {s.code for s in current}
+
+    stock_method = rules.require("stock_method")
+    soc_approach = rules.require("qa_soc")
+    if stock_method == "fixed_depth":
+        raise Blocked("The rule pack uses plain fixed-depth stocks, which VM0042 v2.2 §8.2.1.3(7) does not allow. "
+                      "Use equivalent soil mass (a new pack revision).", code="ESM_REQUIRED",
+                      details={"rule_key": "stock_method", "value": stock_method})
+    if soc_approach == "qa1" and not rules.require("modelled_soc_permitted"):
+        raise Blocked("SOC is quantified with a model (QA1) but the rules don't allow crediting modelled values.",
+                      code="MODELLED_DATA_NOT_PERMITTED", details={"rule_key": "modelled_soc_permitted"})
+    control_info = _control_site_gates(db, rules, current) if soc_approach == "qa2" else {"control_sites": 0}
 
     sites = db.scalars(select(Site).where(Site.org_id == org, Site.project_id == project.id)).all()
     site_code_stratum = {s.id: code_of.get(s.stratum_id) for s in sites}
@@ -234,7 +316,7 @@ def assemble_inputs(
     layer_ids = [lyr.id for lyr in layers]
     results = db.scalars(
         select(LabResult).where(LabResult.org_id == org, LabResult.layer_id.in_(layer_ids),
-                                LabResult.status == "accepted")
+                                LabResult.status == "accepted", _PRIMARY)
     ).all() if layer_ids else []
     latest: dict[tuple[uuid.UUID, str], LabResult] = {}
     for r in results:
@@ -243,58 +325,115 @@ def assemble_inputs(
         if cur is None or (r.version, r.created_at) > (cur.version, cur.created_at):
             latest[k] = r
 
-    method = rules.require("stock_method")
-    depth_limit = float(rules.require("stock_depth_cm")) if method == "fixed_depth" else None
-    needed = list(REQUIRED_ANALYTES)
-    if rules.require("coarse_fragment_correction"):
-        needed.append("coarse_fraction")
+    coarse = bool(rules.require("coarse_fragment_correction"))
+    shallow_ok = rules.get("shallow_soil_allowed") is True
+    camp_depth = {base.id: base.depth_to_cm, mon.id: mon.depth_to_cm}
+    min_increments = int(rules.get("resample_min_depth_increments") or 2)
 
     layers_by_sample: dict[uuid.UUID, list[SoilLayer]] = defaultdict(list)
     for lyr in layers:
-        if depth_limit is not None and lyr.depth_from_cm >= depth_limit:
-            continue  # below the required depth: not used
         layers_by_sample[lyr.sample_id].append(lyr)
 
     missing: list[dict[str, Any]] = []
+    too_few_increments: list[str] = []
     src_layers: dict[str, Any] = {}
     points: dict[tuple[str, str], list[engine.Point]] = defaultdict(list)  # (stratum code, campaign kind)
     src_samples: dict[str, Any] = {}
     for smp in samples:
         stratum_code = site_code_stratum[smp.site_id]
         kind = "baseline" if smp.campaign_id == base.id else "monitoring"
+        eq3_ready = bool(smp.probe_diameter_mm and smp.cores_composited)
         eng_layers: list[engine.Layer] = []
         for lyr in sorted(layers_by_sample.get(smp.id, []), key=lambda x: x.depth_from_cm):
-            vals = {a: latest.get((lyr.id, a)) for a in needed}
-            absent = [a for a, v in vals.items() if v is None]
+            soc = latest.get((lyr.id, "soc_pct"))
+            fsm = latest.get((lyr.id, "fine_soil_mass_g")) if eq3_ready else None
+            bd = latest.get((lyr.id, "bulk_density_g_cm3"))
+            cf = latest.get((lyr.id, "coarse_fraction"))
+            absent = [] if soc is not None else ["soc_pct"]
+            if fsm is None:
+                if bd is None:
+                    absent.append("bulk_density_g_cm3")
+                if coarse and cf is None:
+                    absent.append("coarse_fraction")
             if absent:
                 missing.append({"layer": lyr.code, "analytes": absent})
                 continue
+            used = {"soc_pct": soc}
+            if fsm is not None:
+                used["fine_soil_mass_g"] = fsm
+            else:
+                used["bulk_density_g_cm3"] = bd
+                if cf is not None:
+                    used["coarse_fraction"] = cf
             eng_layers.append(engine.Layer(
                 code=lyr.code, depth_from_cm=lyr.depth_from_cm, depth_to_cm=lyr.depth_to_cm,
-                bulk_density_g_cm3=vals["bulk_density_g_cm3"].value, soc_pct=vals["soc_pct"].value,
-                coarse_fraction=vals["coarse_fraction"].value if "coarse_fraction" in vals else None,
+                bulk_density_g_cm3=bd.value if bd is not None and fsm is None else None, soc_pct=soc.value,
+                coarse_fraction=cf.value if cf is not None and fsm is None else None,
+                fine_soil_mass_g=fsm.value if fsm is not None else None,
             ))
             src_layers[lyr.code] = {
-                "layer_id": str(lyr.id), "sample_id": str(smp.id),
+                "layer_id": str(lyr.id), "sample_id": str(smp.id), "mass_method": "eq3" if fsm else "bulk_density",
                 "results": {a: {"id": str(v.id), "value": v.value, "unit": v.unit, "method": v.method,
-                                "version": v.version} for a, v in vals.items()},
+                                "version": v.version} for a, v in used.items()},
             }
         if not layers_by_sample.get(smp.id):
-            missing.append({"layer": f"{smp.code} (no layers)", "analytes": needed})
-        points[(stratum_code, kind)].append(engine.Point(str(smp.site_id), tuple(eng_layers), smp.code))
-        src_samples[smp.code] = {"sample_id": str(smp.id), "site_id": str(smp.site_id),
-                                 "site_code": site_by_id[smp.site_id].code, "campaign": kind,
-                                 "campaign_id": str(smp.campaign_id)}
+            missing.append({"layer": f"{smp.code} (no layers)", "analytes": ["soc_pct"]})
+        shallow = bool(shallow_ok and (smp.deviation_reason or "").strip()
+                       and smp.depth_reached_cm + 0.5 < camp_depth[smp.campaign_id])
+        if (stock_method == "esm" and kind == "monitoring" and not shallow
+                and len(layers_by_sample.get(smp.id, [])) < min_increments):
+            too_few_increments.append(smp.code)
+        points[(stratum_code, kind)].append(engine.Point(
+            str(smp.site_id), tuple(eng_layers), smp.code, probe_diameter_mm=smp.probe_diameter_mm,
+            cores_composited=smp.cores_composited, shallow=shallow))
+        site = site_by_id[smp.site_id]
+        src_samples[smp.code] = {"sample_id": str(smp.id), "site_id": str(smp.site_id), "site_code": site.code,
+                                 "campaign": kind, "campaign_id": str(smp.campaign_id), "shallow": shallow,
+                                 "probe_diameter_mm": smp.probe_diameter_mm, "cores_composited": smp.cores_composited,
+                                 "intended": {"latitude": site.latitude, "longitude": site.longitude},
+                                 "actual": {"latitude": smp.latitude, "longitude": smp.longitude},
+                                 "collected_at": smp.collected_at.isoformat()}
     if missing:
         raise Blocked(
             f"{len(missing)} soil layer(s) are missing accepted lab results needed for the calculation.",
             code="MISSING_LAB_RESULT", details={"layers": missing},
         )
+    if too_few_increments:
+        raise Blocked(
+            f"Equivalent soil mass needs at least {min_increments} depth increments at re-sampling (VM0042 "
+            f"§8.2.1.3(7)); {len(too_few_increments)} monitoring sample(s) have fewer.", code="ESM_INCREMENTS_REQUIRED",
+            details={"samples": too_few_increments[:50]},
+        )
+
+    b_samples = [s for s in samples if s.campaign_id == base.id]
+    m_samples = [s for s in samples if s.campaign_id == mon.id]
+    tb, tm = _mean_date(b_samples), _mean_date(m_samples)
+    interval = (tm - tb) / (365.25 * 86400) if tb is not None and tm is not None else None
+
+    # activity data (Table 4 / QA3) — the project must have it; emissions are never assumed zero
+    y0 = min((s.collected_at.year for s in b_samples), default=base.planned_start.year)
+    y1 = max((s.collected_at.year for s in m_samples), default=mon.planned_start.year)
+    emis_inp, records = emissions_svc.emissions_input(db, project, period_start, period_end,
+                                                      biochar_years=tuple(range(y0, y1 + 1)), on=on)
+    if not records:
+        raise Blocked(
+            "No activity data (baseline schedule and project practices, VM0042 Table 4) is recorded for this project, "
+            "so emissions can't be quantified.", code="ACTIVITY_DATA_MISSING", details={"project_id": str(project.id)})
 
     terms = approved_terms(db, org, project.id, period_label)
+    # §8.4.2 (a): a livestock decline needs an approved displacement-leakage estimate before crediting
+    emis_inp = dataclasses.replace(emis_inp, displacement_leakage_available="leakage_displacement" in terms)
+    for key in engine.MODELLED_TERMS:
+        if key in terms and key != "baseline_scenario" and not rules.get("modelled_soc_permitted"):
+            raise Blocked(f"An approved modelled estimate (“{key.replace('_', ' ')}”) exists, but the rules don't "
+                          "allow crediting modelled values.", code="MODELLED_DATA_NOT_PERMITTED",
+                          details={"rule_key": "modelled_soc_permitted", "term": key})
+    prior, prior_runs = _prior_cumulative(db, project, period_start)
+    ms_design, ms_source = sampling_svc.multistage_input_for_run(db, org, project.id, base, mon)  # Appendix 6
     eng_strata = tuple(
         engine.StratumData(
             code=s.code, area_ha=s.area_ha, role=s.role, control_for_code=s.control_for_code,
+            quantification_unit=s.quantification_unit or s.code,
             baseline=tuple(points.get((s.code, "baseline"), [])),
             monitoring=tuple(points.get((s.code, "monitoring"), [])),
         )
@@ -303,16 +442,21 @@ def assemble_inputs(
     inp = engine.EngineInput(
         design=mon.design, strata=eng_strata,
         terms={k: engine.Term(t.value_t_co2e, t.variance, t.df, t.source) for k, t in sorted(terms.items())},
+        measurement_interval_years=round(interval, 6) if interval is not None else None,
+        vintages=engine.vintages_for(period_start, period_end), emissions=emis_inp,
+        prior_cumulative_stock_change_t_co2e=prior, multistage=ms_design,
     )
     sources = {
         "campaigns": {
-            "baseline": {"id": str(base.id), "code": base.code, "design": base.design},
+            "baseline": {"id": str(base.id), "code": base.code, "design": base.design,
+                         "planned_start": base.planned_start.isoformat()},
             "monitoring": {"id": str(mon.id), "code": mon.code, "design": mon.design,
                            "planned_start": mon.planned_start.isoformat()},
         },
         "strata": [
             {"id": str(s.id), "code": s.code, "name": s.name, "role": s.role, "control_for_code": s.control_for_code,
-             "version": s.version, "area_ha": s.area_ha, "field_ids": sorted(str(f) for f in (s.field_ids or []))}
+             "quantification_unit": s.quantification_unit or s.code, "version": s.version, "area_ha": s.area_ha,
+             "field_ids": sorted(str(f) for f in (s.field_ids or []))}
             for s in current
         ],
         "samples": src_samples,
@@ -320,7 +464,17 @@ def assemble_inputs(
         "terms": {k: {"id": str(t.id), "version": t.version, "value_t_co2e": t.value_t_co2e,
                       "variance": t.variance, "df": t.df, "source": t.source}
                   for k, t in sorted(terms.items())},
+        "activity_records": [
+            {"id": str(r.id), "record_id": str(r.record_id), "version": r.version, "field_id": str(r.field_id),
+             "scenario": r.scenario, "year": r.year, "category": r.category, "data_tier": r.data_tier}
+            for r in records
+        ],
+        "measurement_interval_years": interval,
+        "control_sites": control_info,
+        "prior_runs": prior_runs,
     }
+    if ms_source is not None:
+        sources["sampling_design"] = ms_source
     return inp, sources
 
 
@@ -350,7 +504,8 @@ def create_run(db: Session, user: CurrentUser, project_id: str, body: RunIn) -> 
     _run_quality_checks(db, user, project)
     _refuse_if_blocking(db, user.org_id, project.id, "run a calculation")
 
-    inp, sources = assemble_inputs(db, project, base, mon, rules, body.period_label)
+    inp, sources = assemble_inputs(db, project, base, mon, rules, body.period_label, body.period_start,
+                                   body.period_end)
     result = engine.calculate(inp, rules)
 
     inputs_snapshot = {
@@ -389,13 +544,20 @@ def _post_run_findings(db: Session, user: CurrentUser, project: Project, run: Ca
 
     if result.net_before_uncertainty_t_co2e <= 0:
         add("NET_RESULT_NOT_POSITIVE", "info",
-            "Soil carbon did not increase over this period, so no credits arise. The result is reported as measured.",
-            {"net_before_uncertainty_t_co2e": result.net_before_uncertainty_t_co2e})
+            "The greenhouse-gas benefit did not increase over this period, so no credits arise. The result is "
+            "reported as measured.", {"net_before_uncertainty_t_co2e": result.net_before_uncertainty_t_co2e})
     if result.flags.get("high_uncertainty"):
         add("HIGH_UNCERTAINTY", "warning",
             "The uncertainty deduction is more than 15% of the result. More samples would reduce it.",
-            {"deduction_t_co2e": result.uncertainty_deduction_t_co2e,
-             "net_before_uncertainty_t_co2e": result.net_before_uncertainty_t_co2e})
+            {"deduction_t_co2e": result.uncertainty_deduction_t_co2e, "gross_t_co2e": result.gross_t_co2e})
+    if result.flags.get("fixed_depth_with_mass_correction"):
+        add("ESM_MASS_CORRECTION", "warning",
+            "Stocks use fixed-depth sampling with a mass correction; VM0042 prefers equivalent soil mass from two or "
+            "more depth increments.", {"stock_method": result.stock_method})
+    if result.de_minimis.get("candidates"):
+        add("DE_MINIMIS_SOURCES", "info",
+            "Some emission sources or leakage are below the de minimis threshold: "
+            + ", ".join(result.de_minimis["candidates"]) + ".", {"de_minimis": result.de_minimis})
 
 
 # ================================================================ workflow
@@ -425,12 +587,37 @@ def _run_field_ids(run: CalculationRun) -> list[uuid.UUID]:
     return sorted(out)
 
 
-def active_claims(db: Session, org_id: uuid.UUID, field_ids: list[uuid.UUID], pool: str = POOL) -> list[Claim]:
+def credited_pools(run: CalculationRun) -> list[str]:
+    """Carbon pools / gases this run credits (claims prevent double counting per pool)."""
+    res = run.results or {}
+    comps = ((res.get("emissions") or {}).get("components") or {})
+    pools = {POOL}
+    for key, value in comps.items():
+        if not value:
+            continue
+        if key.startswith("co2_"):
+            pools.add("co2")
+        elif key.startswith("ch4_") or key == "ch4_soil":
+            pools.add("ch4")
+        elif key.startswith("n2o_") or key == "n2o_soil":
+            pools.add("n2o")
+        elif key == "legacy_terms":
+            pools.add("co2")
+    soc = res.get("soc") or {}
+    if soc.get("tree_wp_t_co2e") or soc.get("tree_bsl_t_co2e"):
+        pools.add("biomass")
+    return sorted(pools)
+
+
+def active_claims(db: Session, org_id: uuid.UUID, field_ids: list[uuid.UUID], pool: str | None = POOL,
+                  pools: list[str] | None = None) -> list[Claim]:
     if not field_ids:
         return []
-    rows = db.scalars(
-        select(Claim).where(Claim.org_id == org_id, Claim.field_id.in_(field_ids), Claim.pool == pool)
-    ).all()
+    q = select(Claim).where(Claim.org_id == org_id, Claim.field_id.in_(field_ids))
+    wanted = pools if pools is not None else ([pool] if pool else None)
+    if wanted is not None:
+        q = q.where(Claim.pool.in_(wanted))
+    rows = db.scalars(q).all()
     released = {str((c.meta or {}).get("releases_claim_id")) for c in rows if c.released_by_run_id is not None}
     return [c for c in rows if c.released_by_run_id is None and str(c.id) not in released]
 
@@ -438,7 +625,7 @@ def active_claims(db: Session, org_id: uuid.UUID, field_ids: list[uuid.UUID], po
 def _release_claims(db: Session, user: CurrentUser, old: CalculationRun, new: CalculationRun) -> int:
     """Claims are append-only, so a release is recorded as a marker row pointing at the claim."""
     n = 0
-    for c in active_claims(db, old.org_id, _run_field_ids(old)):
+    for c in active_claims(db, old.org_id, _run_field_ids(old), pool=None):
         if c.run_id != old.id:
             continue
         marker = Claim(
@@ -482,23 +669,26 @@ def approve_run(db: Session, user: CurrentUser, run_id: str, note: str = "") -> 
     unknown = [str(f) for f in field_ids if f not in known]
     if unknown:
         raise ValidationFailed("Some zone fields no longer exist.", code="UNKNOWN_FIELD", details={"fields": unknown})
+    pools = credited_pools(run)
     overlaps = [
-        c for c in active_claims(db, user.org_id, field_ids)
+        c for c in active_claims(db, user.org_id, field_ids, pools=pools)
         if c.run_id != run.id and c.period_start <= run.period_end and run.period_start <= c.period_end
     ]
     if overlaps:
         raise Conflict(
             "Some fields are already credited for an overlapping period by another calculation.",
             code="CLAIM_OVERLAP",
-            details={"claims": [{"field_id": str(c.field_id), "run_id": str(c.run_id),
+            details={"claims": [{"field_id": str(c.field_id), "run_id": str(c.run_id), "pool": c.pool,
                                  "period_start": c.period_start.isoformat(), "period_end": c.period_end.isoformat()}
                                 for c in overlaps]},
         )
-    for fid in field_ids:
-        claim = Claim(org_id=user.org_id, created_by=user.id, field_id=fid, pool=POOL, period_start=run.period_start,
-                      period_end=run.period_end, run_id=run.id, meta={"period_label": run.period_label})
-        db.add(claim)
-        audit(db, user, "claim.create", claim)
+    for pool in pools:
+        for fid in field_ids:
+            claim = Claim(org_id=user.org_id, created_by=user.id, field_id=fid, pool=pool,
+                          period_start=run.period_start, period_end=run.period_end, run_id=run.id,
+                          meta={"period_label": run.period_label})
+            db.add(claim)
+            audit(db, user, "claim.create", claim)
     _add_status(db, user, run, "approved", note.strip())
     emit(db, user, "result.approved", run, totals(run))
     for old in superseded:
@@ -678,6 +868,119 @@ def _dim(key: str, label: str, status: str, detail: str) -> dict[str, str]:
     return {"key": key, "label": label, "status": status, "detail": detail}
 
 
+def _activity_dimension(db: Session, project: Project, rules: rs.RuleSet | None, enrol: list) -> dict[str, str]:
+    """VM0042 Table 4: every enrolled field has the minimum annual data for >= x look-back years (Box 1 tiered)."""
+    label = "Activity data complete (Table 4)"
+    records = emissions_svc.latest_records(db, project.org_id, project.id)
+    if not records:
+        return _dim("activity_data_complete", label, "blocking",
+                    "No baseline schedule or project activity data is recorded.")
+    need_years = int(rules.get("lookback_min_years") or 3) if rules else 3
+    start = project.crediting_start or project.baseline_start
+    if start is not None:
+        start_year = start.year
+    else:
+        proj_years = [r.year for r in records if r.scenario == "project"]
+        start_year = min(proj_years) if proj_years else max(r.year for r in records) + 1
+    fields = sorted({e.field_id for e in enrol if e.status == "enrolled"})
+    gaps: list[str] = []
+    for fid in fields:
+        base = [r for r in records if r.field_id == fid and r.scenario == "baseline" and r.year < start_year]
+        years = sorted({r.year for r in base})
+        if len(years) < need_years:
+            gaps.append(f"{len(years)} of {need_years} look-back year(s)")
+            continue
+        for y in years[-need_years:]:
+            cats = {r.category for r in base if r.year == y}
+            lacking = [c for c in emissions_domain.TABLE4_CATEGORIES if c not in cats]
+            if lacking:
+                gaps.append(f"{y}: {', '.join(lacking)}")
+                break
+    untiered = sum(1 for r in records if not r.data_tier)
+    if untiered:
+        gaps.append(f"{untiered} record(s) without a Box 1 data tier")
+    if not gaps:
+        return _dim("activity_data_complete", label, "ok",
+                    f"{len(records)} record(s); every enrolled field has {need_years} complete look-back year(s).")
+    return _dim("activity_data_complete", label, "warning",
+                f"{len(gaps)} gap(s): " + "; ".join(gaps[:5]) + ("..." if len(gaps) > 5 else ""))
+
+
+def _control_dimension(rules: rs.RuleSet | None, strata: list[Stratum], today: date) -> dict[str, str]:
+    label = "Baseline control sites (QA2)"
+    if rules is None:
+        return _dim("control_sites", label, "blocking", "Approve the rules first.")
+    if rules.get("qa_soc") != "qa2":
+        return _dim("control_sites", label, "ok", "Not needed: SOC is not quantified with QA2.")
+    current = [s for s in strata if _effective(s, today)]
+    controls = [s for s in current if s.role == "control"]
+    projects = [s for s in current if s.role == "project"]
+    if not controls:
+        allowed = rules.get("baseline_scenario_required") is True
+        return _dim("control_sites", label, "warning" if allowed else "blocking",
+                    "No control zones; the baseline comes from a modelled term." if allowed else
+                    "QA2 needs baseline control sites (VM0042 §8.2).")
+    n_sites = len({str(f) for c in controls for f in (c.field_ids or [])})
+    need = int(rules.get("min_control_sites") or 3)
+    linked = {c.control_for_code for c in controls}
+    without = [p.code for p in projects if p.code not in linked]
+    ok = n_sites >= need and not without
+    detail = f"{n_sites} control site(s) (need {need})"
+    detail += f"; strata without control: {', '.join(without)}" if without else "; every stratum has one."
+    return _dim("control_sites", label, "ok" if ok else "blocking", detail)
+
+
+def _metadata_table(name: str):
+    from app.core import db as dbmod
+
+    return dbmod.Base.metadata.tables.get(name)
+
+
+def _table_dimension(db: Session, project: Project, table: str, key: str, label: str, hint: str,
+                     where: dict[str, Any] | None = None, approved_status: str | None = "approved") -> dict[str, str]:
+    """Read a table another module owns, only if it exists (skip gracefully otherwise).
+    With a ``status`` column, only rows in ``approved_status`` count as done."""
+    t = _metadata_table(table)
+    if t is None or "project_id" not in t.c:
+        return _dim(key, label, "warning", f"Not recorded on the platform yet. {hint}")
+    try:
+        if not inspect(db.get_bind()).has_table(table):
+            return _dim(key, label, "warning", f"Not recorded on the platform yet. {hint}")
+        q = select(t.c.status if "status" in t.c else t.c.project_id).where(t.c.project_id == project.id)
+        if "org_id" in t.c:
+            q = q.where(t.c.org_id == project.org_id)
+        for col, val in (where or {}).items():
+            q = q.where(t.c[col] == val)
+        rows = list(db.execute(q).scalars())
+    except Exception:  # noqa: BLE001 - another module's table; never break readiness
+        return _dim(key, label, "warning", f"Could not be read. {hint}")
+    if not rows:
+        return _dim(key, label, "blocking", f"None recorded. {hint}")
+    if "status" in t.c and approved_status is not None:
+        done = sum(1 for r in rows if r == approved_status)
+        if not done:
+            return _dim(key, label, "warning", f"{len(rows)} record(s), none {approved_status} yet.")
+        return _dim(key, label, "ok", f"{done} {approved_status} record(s).")
+    return _dim(key, label, "ok", f"{len(rows)} record(s).")
+
+
+def _monitoring_plan_dimension(db: Session, project: Project) -> dict[str, str]:
+    label = "Monitoring plan (§9)"
+    hint = ("VM0042 §9: tasks, boundary, parameters, sample designs, control-site plans, 10-year baseline "
+            "re-evaluation, QA/QC, archiving (>= 2 years after crediting).")
+    docs = _metadata_table("documents")
+    if docs is not None and "kind" in docs.c and "project_id" in docs.c:
+        d = _table_dimension(db, project, "documents", "monitoring_plan", label, hint,
+                             where={"kind": "monitoring_plan"}, approved_status="active")
+        if d["status"] == "ok":
+            return d
+    n = db.scalar(select(func.count()).select_from(EvidenceFile).where(
+        EvidenceFile.org_id == project.org_id, EvidenceFile.kind == "monitoring_plan",
+        EvidenceFile.entity_id == str(project.id))) or 0
+    return _dim("monitoring_plan", label, "ok" if n else "warning",
+                f"{n} monitoring-plan document(s) attached." if n else f"No monitoring plan recorded. {hint}")
+
+
 def readiness(db: Session, user: CurrentUser, project_id: str, period_label: str | None = None) -> dict[str, Any]:
     project = get_project(db, user, project_id)
     org = user.org_id
@@ -741,14 +1044,15 @@ def readiness(db: Session, user: CurrentUser, project_id: str, period_label: str
     layer_ids = [lyr.id for lyr in layers]
     results = db.scalars(select(LabResult).where(LabResult.org_id == org, LabResult.layer_id.in_(layer_ids))).all() \
         if layer_ids else []
-    accepted = [r for r in results if r.status == "accepted"]
+    accepted = [r for r in results if r.status == "accepted" and (r.purpose or "primary") == "primary"]
     needed = set(REQUIRED_ANALYTES)
     if rules is not None and rules.get("coarse_fragment_correction"):
         needed.add("coarse_fraction")
     have: dict[uuid.UUID, set[str]] = defaultdict(set)
     for r in accepted:
         have[r.layer_id].add(r.analyte)
-    complete = sum(1 for lid in layer_ids if needed <= have.get(lid, set()))
+    eq3 = {"soc_pct", "fine_soil_mass_g"}
+    complete = sum(1 for lid in layer_ids if needed <= have.get(lid, set()) or eq3 <= have.get(lid, set()))
     dims.append(_dim("lab_results_accepted", "Lab results accepted",
                      "blocking" if not layer_ids or complete == 0 else ("ok" if complete == len(layer_ids) else "warning"),
                      f"{complete} of {len(layer_ids)} layer(s) have all accepted results."))
@@ -782,17 +1086,25 @@ def readiness(db: Session, user: CurrentUser, project_id: str, period_label: str
     if period_label:
         term_q = term_q.where(TermEstimate.period_label == period_label)
     approved_t = {t.term for t in db.scalars(term_q).all()}
+    rule_terms = ("baseline_scenario", "project_emissions", "baseline_emissions", "leakage")
     if rules is None:
         dims.append(_dim("terms_approved", "Project terms approved", "blocking", "Approve the rules first."))
     else:
-        needed_terms = [t for t in engine.ENGINE_TERMS if rules.get(f"{t}_required") is True]
-        undecided = [t for t in engine.ENGINE_TERMS if rules.get(f"{t}_required") is None]
+        needed_terms = [t for t in rule_terms if rules.get(f"{t}_required") is True]
+        undecided = [t for t in rule_terms if rules.get(f"{t}_required") is None]
         missing_t = [t for t in needed_terms if t not in approved_t]
         status = "blocking" if undecided else ("warning" if missing_t else "ok")
         detail = ("Missing approved estimates: " + ", ".join(missing_t)) if missing_t else "All required terms approved."
         if undecided:
             detail = "The rules don't say whether these terms are needed: " + ", ".join(undecided)
         dims.append(_dim("terms_approved", "Project terms approved", status, detail))
+
+    dims.append(_activity_dimension(db, project, rules, enrol))
+    dims.append(_control_dimension(rules, strata, today))
+    dims.append(_table_dimension(db, project, "additionality_assessments", "additionality",
+                                 "Additionality assessment recorded",
+                                 "VM0042 §7: regulatory surplus, barrier analysis and common practice (< 20 %)."))
+    dims.append(_monitoring_plan_dimension(db, project))
 
     runs = db.scalars(select(CalculationRun).where(CalculationRun.org_id == org,
                                                    CalculationRun.project_id == project.id)).all()

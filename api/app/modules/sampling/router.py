@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.orm import Session
 
@@ -10,7 +12,8 @@ from app.core.tenancy import get_owned, scoped
 from app.modules.sampling import service
 from app.modules.sampling.models import Campaign, SamplePlan
 from app.modules.sampling.schemas import (
-    AssignIn, CampaignIn, CampaignStatusIn, CustodyIn, PlanIn, PlanPatch, SampleIn, SkipIn, StratumIn,
+    AssignIn, CampaignIn, CampaignStatusIn, CustodyIn, MddIn, PlanIn, PlanPatch, SampleIn, SamplingDesignIn, SkipIn,
+    StratumIn,
 )
 
 router = APIRouter(tags=["Sampling"])
@@ -31,6 +34,22 @@ def list_strata(
     project_id: str, all: bool = False, user: CurrentUser = Depends(READ), db: Session = Depends(get_db)  # noqa: A002
 ):
     return service.list_strata(db, user, service.get_project(db, user, project_id), include_history=all)
+
+
+@router.get("/projects/{project_id}/sampling-annex.json")
+def sampling_annex_json(project_id: str, user: CurrentUser = Depends(READ),
+                        db: Session = Depends(get_db)):
+    """Strata and sampling points annex (VM0042 v2.2 §8.2.1.2), submitted at every verification."""
+    return service.sampling_annex(db, user, service.get_project(db, user, project_id))
+
+
+@router.get("/projects/{project_id}/sampling-annex.csv")
+def sampling_annex_csv(project_id: str, user: CurrentUser = Depends(READ),
+                       db: Session = Depends(get_db)):
+    project = service.get_project(db, user, project_id)
+    text = service.sampling_annex_csv(service.sampling_annex(db, user, project))
+    return Response(content=text, media_type="text/csv", headers={
+        "Content-Disposition": f'attachment; filename="{project.code}-sampling-annex.csv"'})
 
 
 # ------------------------------------------------------------------ campaigns
@@ -62,11 +81,52 @@ def campaign_status(campaign_id: str, body: CampaignStatusIn, user: CurrentUser 
     return service.campaign_out(db, c)
 
 
+# ------------------------------------------------------------------ multi-stage design (VM0042 Appendix 6)
+@router.get("/projects/{project_id}/sampling-design/population")
+def design_population(project_id: str, stage1_unit: Literal["landowner", "farm", "field"] = "landowner",
+                      user: CurrentUser = Depends(require(P.READ, P.PLAN_SAMPLING)), db: Session = Depends(get_db)):
+    """Stage-1 units and their fields with areas and PPS / equal selection probabilities."""
+    return service.population_out(db, user, service.get_project(db, user, project_id), stage1_unit)
+
+
+@router.get("/campaigns/{campaign_id}/sampling-design")
+def get_sampling_design(campaign_id: str, user: CurrentUser = Depends(require(P.READ, P.PLAN_SAMPLING)),
+                        db: Session = Depends(get_db)):
+    c = service.get_campaign(db, user, campaign_id)
+    return service.design_out(db, service.get_design(db, user, c))
+
+
+@router.post("/campaigns/{campaign_id}/sampling-design", status_code=201)
+def create_sampling_design(campaign_id: str, body: SamplingDesignIn, user: CurrentUser = Depends(PLAN),
+                           db: Session = Depends(get_db)):
+    c = service.get_campaign(db, user, campaign_id)
+    return service.design_out(db, service.save_design(db, user, c, body))
+
+
+@router.put("/campaigns/{campaign_id}/sampling-design")
+def update_sampling_design(campaign_id: str, body: SamplingDesignIn, user: CurrentUser = Depends(PLAN),
+                           db: Session = Depends(get_db)):
+    c = service.get_campaign(db, user, campaign_id)
+    return service.design_out(db, service.save_design(db, user, c, body, existing=service.get_design(db, user, c)))
+
+
+@router.delete("/campaigns/{campaign_id}/sampling-design", status_code=204)
+def delete_sampling_design(campaign_id: str, user: CurrentUser = Depends(PLAN), db: Session = Depends(get_db)):
+    service.delete_design(db, user, service.get_campaign(db, user, campaign_id))
+    return Response(status_code=204)
+
+
 # ------------------------------------------------------------------ plans
 @router.post("/campaigns/{campaign_id}/sample-plans", status_code=201)
 def create_plan(campaign_id: str, body: PlanIn, user: CurrentUser = Depends(PLAN), db: Session = Depends(get_db)):
     plan, warnings = service.create_plan(db, user, service.get_campaign(db, user, campaign_id), body)
     return service.plan_out(db, plan, warnings)
+
+
+@router.post("/sample-plans/mdd")
+def mdd(body: MddIn, user: CurrentUser = Depends(require(P.PLAN_SAMPLING, P.APPROVE_SAMPLING, P.READ))):
+    """Power analysis (VM0042 v2.2 Eq. 1-2): n for a target MDD, or the MDD for a given n."""
+    return service.power_analysis(body.s, body.alpha, body.power, body.mdd, body.n)
 
 
 @router.get("/campaigns/{campaign_id}/sample-plans")

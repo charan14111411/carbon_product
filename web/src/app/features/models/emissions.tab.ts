@@ -6,16 +6,17 @@ import { AuthService } from '../../core/auth.service';
 import { DayPipe, NumPipe } from '../../core/format';
 import { KIT } from '../../ui/kit';
 import { Remote, daysAgo, isoDate } from '../supporting/shared';
+import { WallChip } from './informing-wall';
 
 interface Estimate {
   project_id: string; start: string; end: string; factors: Record<string, { value: number; source: string }>;
   by_scenario: Record<string, { records: number; n_kg: number; t_co2e: number }>; records_missing_n: string[];
-  data_class: string; note: string; rule_pack: string | null;
+  data_class: string; note: string; rule_pack: string | null; credit_eligible?: boolean; credit_eligible_reason?: string;
 }
 
 @Component({
   selector: 'vc-emissions-tab',
-  imports: [...KIT, FormsModule, RouterLink, NumPipe, DayPipe],
+  imports: [...KIT, FormsModule, RouterLink, NumPipe, DayPipe, WallChip],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <section class="card win">
@@ -71,7 +72,7 @@ interface Estimate {
         }
       </div>
       <section class="card">
-        <div class="card-head"><h3>Factors used</h3><span class="small subtle">{{ d.rule_pack }}</span></div>
+        <div class="card-head"><h3>Factors used</h3><span class="small subtle">{{ d.rule_pack }}</span><span class="spacer"></span><vc-wall-chip [data]="d" /></div>
         <div class="table-wrap">
           <table class="table">
             <thead><tr><th>Factor</th><th class="num">Value</th><th>Source</th></tr></thead>

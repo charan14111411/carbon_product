@@ -16,7 +16,7 @@ from app.core.errors import Conflict, IllegalTransition, ValidationFailed
 from app.core.tenancy import audit, get_owned, scoped, snapshot
 from app.modules.land.models import Enrolment, Farm, Field
 from app.modules.programmes.models import Project
-from app.modules.supporting import resolver
+from app.modules.supporting import derived, resolver
 from app.modules.supporting.models import PARAMETERS, Device, Observation, SyncRun
 from app.modules.supporting.providers import Providers, default_parameters, get_providers
 from app.modules.supporting.schemas import MAX_SYNC_DAYS, DeviceIn, DevicePatch
@@ -322,4 +322,58 @@ def coverage(db: Session, user: CurrentUser, project: Project, on: date | None =
                             f"from {r['avg_quality']:.2f}."} for r in tier3[:10]
         ],
         "field_details": rows,
+    }
+
+
+# ------------------------------------------------------------------ derived features
+DERIVED_INPUTS = ("soil_moisture_20cm_pct", "soil_moisture_60cm_pct", "rain_mm", "air_temp_c", "rel_humidity_pct")
+
+
+def daily_inputs(db: Session, field_id: uuid.UUID, start: date, end: date,
+                 parameters: tuple[str, ...] = DERIVED_INPUTS) -> dict[str, derived.Series]:
+    """Best observation per day per parameter in [start, end] (only days with a value)."""
+    out: dict[str, derived.Series] = {p: {} for p in parameters}
+    for (param, day), o in best_rows(db, field_id, None, start, end).items():
+        if param in out and o.value is not None and o.tier > 0:
+            out[param][day] = derived.Daily(day, float(o.value), o.tier, o.provider, float(o.quality),
+                                            None if o.data_class == "NONE" else o.data_class)
+    return out
+
+
+def wetness_threshold(fld: Field, override: float | None, providers: Providers | None = None) -> dict[str, Any]:
+    if override is not None:
+        return {"value_pct": override, "source": "given by the user"}
+    soil = (providers or get_providers()).soil
+    p = soil.properties(fld.centroid_lat, fld.centroid_lon)
+    om = p["soc_g_kg"] / 10.0 * 1.724
+    fc = derived.field_capacity_pct(p["sand_pct"], p["clay_pct"], om)
+    return {"value_pct": fc, "source": "field-capacity proxy (Saxton & Rawls 2006, θ at −33 kPa) from "
+            f"{soil.source_ref(fld.centroid_lat, fld.centroid_lon)}", "data_class": "MODELLED",
+            "inputs": {"sand_pct": p["sand_pct"], "clay_pct": p["clay_pct"], "om_pct": round(om, 3)}}
+
+
+def derived_features(db: Session, fld: Field, start: date, end: date, window: str = "monthly",
+                     wet_threshold_pct: float | None = None) -> dict[str, Any]:
+    if end < start:
+        raise ValidationFailed("The end date can't be before the start date.")
+    if (end - start).days + 1 > MAX_SYNC_DAYS:
+        raise ValidationFailed(f"Choose a window of at most {MAX_SYNC_DAYS} days.", code="WINDOW_TOO_LONG")
+    if window not in derived.WINDOWS:
+        raise ValidationFailed("Window must be one of: " + ", ".join(derived.WINDOWS) + ".", code="UNKNOWN_WINDOW")
+    from app.modules.intelligence.domain import wall
+
+    lookback = start - timedelta(days=max(derived.RAIN_WINDOWS) - 1)
+    inputs = daily_inputs(db, fld.id, lookback, end)
+    # only rain uses the look-back (trailing windows); everything else stays inside the period
+    for p in inputs:
+        if p != "rain_mm":
+            inputs[p] = {d: v for d, v in inputs[p].items() if d >= start}
+    thr = wetness_threshold(fld, wet_threshold_pct)
+    return {
+        "field_id": str(fld.id), "field_code": fld.code, "start": start.isoformat(), "end": end.isoformat(),
+        "window": window, **wall("DERIVED"), "wetness_threshold": thr,
+        "inputs_days": {p: len([d for d in s if d >= start]) for p, s in inputs.items()},
+        "periods": derived.compute(inputs, start, end, window, thr["value_pct"]),
+        "note": "Derived from daily supporting data (best available source per day). Context and model "
+                "features only: not a measurement of soil carbon.",
     }

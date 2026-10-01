@@ -3,7 +3,8 @@ import { ApiService } from '../../core/api.service';
 import { DayPipe, HumanPipe, NumPipe } from '../../core/format';
 import { Icon } from '../../ui/icon';
 import { Badge, Callout, DataClass, Hash, Timeline, TimelineItem } from '../../ui/kit';
-import { ANALYTE_LABEL, CUSTODY_LABEL, ContextBlock, Finding, SampleDetail } from './types';
+import { distanceM } from '../../core/geo';
+import { ANALYTE_LABEL, CUSTODY_LABEL, ContextBlock, DEPTH_LIMIT_LABEL, Finding, STORAGE_LABEL, SampleDetail } from './types';
 import { fmtDate } from '../../core/format';
 
 /** Everything recorded about one soil core: photos, layers, lab results, custody and context. */
@@ -19,10 +20,49 @@ import { fmtDate } from '../../core/format';
         <div><span>By</span><strong>{{ s.collected_by || '—' }}</strong></div>
         <div><span>GPS accuracy</span><strong class="num">{{ s.gps_accuracy_m === null ? '—' : (s.gps_accuracy_m | num: 1) + ' m' }}</strong></div>
         <div><span>From site</span><strong class="num">{{ s.distance_from_site_m | num: 1 }} m</strong></div>
-        <div><span>Depth reached</span><strong class="num">{{ s.depth_reached_cm | num: 0 }} cm</strong></div>
+        <div><span>Depth reached</span><strong class="num">{{ s.depth_reached_cm | num: 0 }} cm</strong>
+          @if (s.depth_limit) { <em class="lim">Stopped by {{ limitLabel(s.depth_limit) }}</em> }</div>
+        <div><span>Probe inner diameter</span><strong class="num">{{ s.probe_diameter_mm == null ? '—' : (s.probe_diameter_mm | num: 1) + ' mm' }}</strong></div>
+        <div><span>Cores composited</span><strong class="num">{{ s.cores_composited == null ? '—' : s.cores_composited + (s.cores_composited === 1 ? ' core' : ' cores') }}</strong></div>
         <div><span>Custody</span><vc-badge [status]="s.status === 'none' ? 'pending' : 'active'">{{ s.status | human }}</vc-badge></div>
       </div>
 
+      <section>
+        <h3 class="sh">Where it was taken <span class="chipref">VM0042 §8.2.1.2</span></h3>
+        <div class="table-wrap geo">
+          <table class="table">
+            <thead><tr><th></th><th class="num">Latitude</th><th class="num">Longitude</th><th></th></tr></thead>
+            <tbody>
+              <tr>
+                <td><span class="gk"><i class="pin-int"></i>Intended</span><div class="subtle small">Planned site {{ s.site_code }}</div></td>
+                <td class="num mono">{{ intended().lat == null ? '—' : (intended().lat | num: 6) }}</td>
+                <td class="num mono">{{ intended().lon == null ? '—' : (intended().lon | num: 6) }}</td>
+                <td><vc-dc cls="DERIVED" /></td>
+              </tr>
+              <tr>
+                <td><span class="gk"><i class="pin-act"></i>Actual</span><div class="subtle small">GPS at the hole, ±{{ s.gps_accuracy_m == null ? '—' : (s.gps_accuracy_m | num: 1) }} m</div></td>
+                <td class="num mono">{{ actual().lat | num: 6 }}</td>
+                <td class="num mono">{{ actual().lon | num: 6 }}</td>
+                <td><vc-dc cls="MEASURED" /></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="gap-line">
+          <vc-icon name="arrow-left-right" [size]="15" />
+          <span>Distance between them</span>
+          <strong class="num">{{ s.distance_from_site_m | num: 1 }} m</strong>
+          <vc-dc cls="CALCULATED" />
+          @if (bearingText(); as b) { <span class="subtle small">the actual position is {{ b }} of the planned site</span> }
+        </div>
+      </section>
+
+      @if (s.depth_limit) {
+        <vc-callout tone="info" icon="pickaxe">
+          <strong>Depth limit: {{ limitLabel(s.depth_limit) }}.</strong> The core stopped at {{ s.depth_reached_cm | num: 0 }} cm.
+          A shallower core counts towards reporting depth only when bedrock or a hardpan stopped it (VM0042 §8.2.1.3(7b)).
+        </vc-callout>
+      }
       @if (s.deviation_reason) {
         <vc-callout tone="warn" icon="alert"><strong>Deviation recorded:</strong> {{ s.deviation_reason }}</vc-callout>
       }
@@ -119,7 +159,7 @@ import { fmtDate } from '../../core/format';
         <h3 class="sh">Record</h3>
         <dl class="kv">
           <dt>Sample code</dt><dd><code>{{ s.code }}</code></dd>
-          <dt>Location</dt><dd class="mono">{{ s.latitude | num: 6 }}, {{ s.longitude | num: 6 }}</dd>
+          <dt>Layers</dt><dd>{{ s.layers.length }} depth increment(s)@if (s.context.core_depths_reached_cm?.length) { · core depths {{ s.context.core_depths_reached_cm!.join(', ') }} cm }</dd>
           <dt>Device</dt><dd class="mono">{{ s.device_id || '—' }}</dd>
           <dt>Sync reference</dt><dd class="mono small">{{ s.client_ref }}</dd>
           @if (s.photos[0]) { <dt>First photo fingerprint</dt><dd><vc-hash [value]="s.photos[0].sha256" /></dd> }
@@ -128,9 +168,19 @@ import { fmtDate } from '../../core/format';
     </div>
   `,
   styles: [`
-    .facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;background:var(--border);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+    .facts{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;background:var(--border);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
     .facts>div{background:var(--surface);padding:10px 12px;display:flex;flex-direction:column;gap:3px;align-items:flex-start}
     .facts span{font-size:11.5px;color:var(--text-3)} .facts strong{font-weight:600;font-size:14px}
+    .facts .lim{font-style:normal;font-size:11.5px;color:var(--amber-600)}
+    .chipref{font:600 10.5px/1 var(--mono);padding:4px 6px;border-radius:4px;background:var(--sand-200);color:var(--stone-700);margin-left:auto}
+    .geo{border:1px solid var(--border);border-radius:var(--radius-sm)}
+    .geo td{padding:8px 12px;vertical-align:top}
+    .gk{display:inline-flex;align-items:center;gap:7px;font-weight:600}
+    .gk i{width:10px;height:10px;border-radius:50%;display:inline-block}
+    .pin-int{border:2px solid var(--stone-500);background:var(--surface)}
+    .pin-act{background:var(--forest-600)}
+    .gap-line{display:flex;align-items:center;gap:8px;margin-top:8px;padding:8px 12px;border-radius:var(--radius-sm);background:var(--surface-2);border:1px solid var(--border);font-size:13px;flex-wrap:wrap}
+    .gap-line vc-icon{color:var(--text-3)}
     .sh{margin-bottom:10px;display:flex;gap:6px;align-items:baseline}
     .photos{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
     .ph{display:flex;flex-direction:column;border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden;text-decoration:none!important;color:inherit;background:var(--surface-2)}
@@ -172,7 +222,8 @@ export class SampleView implements OnDestroy {
       note: [
         e.seal_intact === false ? 'Seal was broken' : e.seal_intact ? 'Seal intact' : '',
         e.count_matches === false ? 'bag count did not match' : e.count_matches ? 'bag count matched' : '',
-        e.notes,
+        e.storage ? `Stored: ${STORAGE_LABEL[e.storage.condition] ?? e.storage.condition}` : '',
+        e.notes || (e.event === 'prepared' ? 'Drying, 2 mm sieving and grinding (VM0042 §8.2.1.3(3))' : ''),
       ].filter(Boolean).join(' · ') || null,
       tone: e.event === 'correction' || e.seal_intact === false || e.count_matches === false ? 'warn' : 'ok',
     })),
@@ -205,6 +256,17 @@ export class SampleView implements OnDestroy {
     });
   }
 
+  intended = computed(() => ({ lat: this.sample().intended_latitude ?? null, lon: this.sample().intended_longitude ?? null }));
+  actual = computed(() => ({ lat: this.sample().actual_latitude ?? this.sample().latitude, lon: this.sample().actual_longitude ?? this.sample().longitude }));
+  bearingText = computed(() => {
+    const i = this.intended(), a = this.actual();
+    if (i.lat == null || i.lon == null || distanceM(i.lat, i.lon, a.lat, a.lon) < 0.5) return null;
+    const dy = a.lat - i.lat, dx = (a.lon - i.lon) * Math.cos((i.lat * Math.PI) / 180);
+    const deg = (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360;
+    return ['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west'][Math.round(deg / 45) % 8];
+  });
+
+  limitLabel(k: string) { return DEPTH_LIMIT_LABEL[k as keyof typeof DEPTH_LIMIT_LABEL] ?? k; }
   analyte(a: string) { return ANALYTE_LABEL[a] ?? a; }
 
   ngOnDestroy(): void {

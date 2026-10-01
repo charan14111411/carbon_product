@@ -26,6 +26,9 @@ export interface Bundle {
   project?: { id: string; code: string; name: string };
   rulesApproved?: boolean;
   shallowSoilAllowed?: boolean | null;
+  /** Rule-pack values, when the server bundle carries them (VM0042 §8.2.1.3). */
+  stockDepthCm?: number | null;
+  resampleMinIncrements?: number | null;
 }
 
 export interface QueuedPhoto {
@@ -56,6 +59,11 @@ export interface QueuedSample {
     layers: { depth_from_cm: number; depth_to_cm: number; label_qr: string }[];
     deviation_reason: string | null;
     device_id: string;
+    /** VM0042 v2.2 Eq. 3 inputs and the reporting-depth limit (POST /samples SampleIn). Optional: older queued records lack them. */
+    depth_limit?: 'bedrock' | 'hardpan' | 'stones' | 'other' | null;
+    probe_diameter_mm?: number | null;
+    cores_composited?: number | null;
+    core_depths_reached_cm?: number[] | null;
   };
   photos: QueuedPhoto[];
   state: SyncState;

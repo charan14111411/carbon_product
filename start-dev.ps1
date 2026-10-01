@@ -19,7 +19,7 @@ if (-not (Test-Path $py)) {
 }
 
 if ($Seed) {
-  Write-Host '2/4  Building the demo dataset (about a minute)...' -ForegroundColor Green
+  Write-Host '2/4  Building the demo dataset (about 6 minutes)...' -ForegroundColor Green
   Push-Location (Join-Path $root 'api'); & $py -m scripts.seed_demo --reset; Pop-Location
 } else {
   Write-Host '2/4  Keeping existing data (use -Seed to rebuild the demo)' -ForegroundColor Green

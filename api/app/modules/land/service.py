@@ -1,4 +1,5 @@
-"""Farms, fields (with computed geometry), land-use history and project enrolment."""
+"""Farms, fields (with computed geometry), land-use history, land tenure and project enrolment
+(with the VM0042 v2.2 §4 applicability checks)."""
 
 from __future__ import annotations
 
@@ -10,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core import geo
-from app.core.auth import CurrentUser
+from app.core.auth import CurrentUser, ensure_not_author
 from app.core.db import utcnow
 from app.core.errors import Blocked, Conflict, IllegalTransition, NotFound, ValidationFailed
 from app.core.events import emit
@@ -19,14 +20,25 @@ from app.modules.catalogue.service import require_active_crop, validate_attribut
 from app.modules.consent.service import has_consent
 from app.modules.evidence.models import EvidenceFile
 from app.modules.farmers.models import Farmer
-from app.modules.land.domain import Check, LandUseSpan, land_use_check
-from app.modules.land.models import Enrolment, Farm, Field, FieldBoundaryVersion, LandUseRecord
+from app.modules.identity.models import AuditEntry
+from app.modules.land.domain import (
+    WETLAND_EXEMPTION_EVIDENCE_KIND, Check, LandUseSpan, land_cover_checks, land_use_check, lookback_activity_check,
+    native_clearing_check, uncovered_periods,
+)
+from app.modules.land.models import Enrolment, Farm, Field, FieldBoundaryVersion, LandTenure, LandUseRecord
 from app.modules.programmes.domain import periods_overlap
 from app.modules.programmes.models import Programme, Project
 
 FIELD_PREFIX = "FLD-"
 DEFAULT_LOOKBACK_YEARS = 10
 REQUIRED_CONSENTS = ("sampling", "data_use")
+SITE_ATTRIBUTES = ("slope_pct", "aspect_deg", "soil_texture_class", "wrb_soil_group", "ecoregion", "climate_zone",
+                   "mean_annual_precip_mm")
+
+
+def project_start(project: Project) -> date | None:
+    """VM0042 project start: the crediting start, else the baseline start."""
+    return project.crediting_start or project.baseline_start
 
 
 # ------------------------------------------------------------------ farms
@@ -106,6 +118,7 @@ def create_field(db: Session, user: CurrentUser, data: dict[str, Any]) -> Field:
         org_id=user.org_id, created_by=user.id, farm_id=farm.id, code=next_field_code(db, user.org_id),
         name=data["name"], crop_code=data.get("crop_code"), crop_attributes=data.get("crop_attributes") or {},
         soil_type=data.get("soil_type"), elevation_m=data.get("elevation_m"), version=1, status="active",
+        land_cover=data.get("land_cover") or "cropland", **{k: data.get(k) for k in SITE_ATTRIBUTES},
     )
     _apply_footprint(f, fp)
     db.add(f)
@@ -134,8 +147,8 @@ def update_field(db: Session, user: CurrentUser, field_id: str, changes: dict[st
     if "crop_code" in changes or "crop_attributes" in changes:
         _check_crop(db, user.org_id, crop_code, attrs or {})
         f.crop_code, f.crop_attributes = crop_code, attrs or {}
-    for k in ("name", "soil_type", "elevation_m"):
-        if k in changes and (changes[k] is not None or k != "name"):
+    for k in ("name", "soil_type", "elevation_m", "land_cover", *SITE_ATTRIBUTES):
+        if k in changes and (changes[k] is not None or k not in ("name", "land_cover")):
             setattr(f, k, changes[k])
 
     if status == "retired" and f.status != "retired":
@@ -283,6 +296,17 @@ def evaluate_eligibility(db: Session, project: Project, f: Field, farmer: Farmer
              for r in records]
     checks.append(land_use_check(spans, today.year, int(lb)))
 
+    # VM0042 v2.2 §4 applicability
+    start = project_start(project)
+    start_year = start.year if start else today.year
+    checks.append(native_clearing_check(spans, start_year))
+    hydrology = db.scalar(select(EvidenceFile.id).where(
+        EvidenceFile.org_id == f.org_id, EvidenceFile.kind == WETLAND_EXEMPTION_EVIDENCE_KIND,
+        EvidenceFile.entity_type == "field", EvidenceFile.entity_id == str(f.id)).limit(1)) is not None
+    checks.extend(land_cover_checks(f.land_cover, f.crop_code, f.crop_attributes, hydrology))
+    checks.append(lookback_activity_check(_baseline_years(db, project, f), start_year))
+    checks.append(tenure_check(db, project, f, farmer))
+
     clashes = []
     for other_enrolment, other in db.execute(
         select(Enrolment, Project).join(Project, Project.id == Enrolment.project_id).where(
@@ -307,6 +331,45 @@ def evaluate_eligibility(db: Session, project: Project, f: Field, farmer: Farmer
         {"missing": missing},
     ))
     return checks
+
+
+def _baseline_years(db: Session, project: Project, f: Field) -> list[int]:
+    """Years with at least one active (latest-version) baseline activity record for the field in the project."""
+    from app.modules.baseline.models import ActivityRecord
+
+    latest: dict[uuid.UUID, ActivityRecord] = {}
+    for r in db.scalars(select(ActivityRecord).where(
+            ActivityRecord.org_id == f.org_id, ActivityRecord.project_id == project.id,
+            ActivityRecord.field_id == f.id, ActivityRecord.scenario == "baseline")).all():
+        if r.record_id not in latest or r.version > latest[r.record_id].version:
+            latest[r.record_id] = r
+    return sorted({r.year for r in latest.values() if r.status == "active"})
+
+
+def tenure_check(db: Session, project: Project, f: Field, farmer: Farmer) -> Check:
+    """The farmer must hold verified tenure / land control covering the whole crediting period."""
+    if project.crediting_start is None or project.crediting_end is None:
+        return Check("land_tenure", False, "Set the project's crediting period so land tenure can be checked "
+                                           "against it.")
+    rows = db.scalars(select(LandTenure).where(
+        LandTenure.org_id == f.org_id, LandTenure.field_id == f.id, LandTenure.holder_farmer_id == farmer.id)).all()
+    verified = [(t.valid_from, t.valid_to) for t in rows if t.status == "verified"]
+    gaps = uncovered_periods(verified, project.crediting_start, project.crediting_end)
+    pending = sum(1 for t in rows if t.status == "pending")
+    details = {"period": [project.crediting_start.isoformat(), project.crediting_end.isoformat()],
+               "verified_records": len(verified), "pending_records": pending,
+               "gaps": [[a.isoformat(), b.isoformat()] for a, b in gaps]}
+    if not verified:
+        tail = (f"{pending} record(s) are waiting for verification." if pending
+                else "Add the ownership or lease documents and ask a colleague to verify them.")
+        return Check("land_tenure", False, "No verified land-tenure record for this farmer and field. " + tail,
+                     details)
+    if gaps:
+        a, b = gaps[0]
+        return Check("land_tenure", False,
+                     f"Verified land tenure doesn't cover the whole crediting period: {a.isoformat()} to "
+                     f"{b.isoformat()} is not covered.", details)
+    return Check("land_tenure", True, "Verified land tenure covers the whole crediting period.", details)
 
 
 def _eligibility_doc(checks: list[Check], extra: dict | None = None) -> dict[str, Any]:
@@ -408,3 +471,46 @@ def list_enrolments(db: Session, user: CurrentUser, project_id: str, status: str
     if status:
         q = q.where(Enrolment.status == status)
     return list(db.scalars(q).all())
+
+
+# ------------------------------------------------------------------ land tenure
+def _evidence(db: Session, user: CurrentUser, ids: list[str]) -> list[str]:
+    out: list[str] = []
+    for raw in ids:
+        ev = get_owned(db, EvidenceFile, raw, user, "Evidence file")
+        if str(ev.id) not in out:
+            out.append(str(ev.id))
+    return out
+
+
+def add_tenure(db: Session, user: CurrentUser, field_id: str, data: dict[str, Any]) -> LandTenure:
+    f = get_owned(db, Field, field_id, user, "Field")
+    holder = get_owned(db, Farmer, data["holder_farmer_id"], user, "Farmer")
+    t = LandTenure(org_id=user.org_id, created_by=user.id, field_id=f.id, holder_farmer_id=holder.id,
+                   kind=data["kind"], document_evidence_ids=_evidence(db, user, data["document_evidence_ids"]),
+                   valid_from=data["valid_from"], valid_to=data.get("valid_to"), notes=data.get("notes", ""),
+                   status="pending")
+    db.add(t)
+    audit(db, user, "land_tenure.create", t)
+    return t
+
+
+def list_tenure(db: Session, user: CurrentUser, field_id: str) -> list[LandTenure]:
+    f = get_owned(db, Field, field_id, user, "Field")
+    return list(db.scalars(scoped(LandTenure, user).where(LandTenure.field_id == f.id)
+                           .order_by(LandTenure.valid_from, LandTenure.created_at)).all())
+
+
+def verify_tenure(db: Session, user: CurrentUser, tenure_id: str, decision: str, note: str) -> LandTenure:
+    t = get_owned(db, LandTenure, tenure_id, user, "Land tenure")
+    if t.status != "pending":
+        raise IllegalTransition(f"This tenure record is already {t.status}.",
+                                details={"from": t.status, "to": decision})
+    editors = set(db.scalars(select(AuditEntry.created_by).where(
+        AuditEntry.org_id == user.org_id, AuditEntry.entity_type == "LandTenure",
+        AuditEntry.entity_id == str(t.id))).all())
+    ensure_not_author(user.id, t.created_by, *editors, what="a land-tenure record")
+    before = snapshot(t)
+    t.status, t.verified_by, t.verified_at, t.review_note = decision, user.id, utcnow(), note.strip()
+    audit(db, user, f"land_tenure.{decision}", t, before=before, reason=note.strip() or None)
+    return t

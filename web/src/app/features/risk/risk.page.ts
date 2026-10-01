@@ -9,6 +9,16 @@ import { ProjectContext } from '../../core/project-context.service';
 import { ToastService } from '../../core/toast.service';
 import { KIT } from '../../ui/kit';
 import { FieldLite, Remote, isoDate } from '../supporting/shared';
+import { PeopleDirectory } from '../benefits/benefit-types';
+import { apiMessage } from '../credits/credit-ui';
+import { NprTab } from './npr.tab';
+import { ObligationsTab } from './obligations.tab';
+
+interface Remediation {
+  id: string; risk_event_id: string; title: string; description: string; owner_user_id: string | null; due_on: string;
+  status: 'open' | 'in_progress' | 'done' | 'cancelled'; overdue: boolean; completed_on: string | null; evidence_ids: string[];
+  history: { at: string; by: string; status: string; note: string }[]; created_at: string;
+}
 
 interface RiskEvent {
   id: string; project_id: string; field_id: string | null; kind: string; occurred_on: string; description: string;
@@ -40,17 +50,21 @@ const STEP: Record<string, { label: string; verb: string; hint: string }> = {
 
 @Component({
   selector: 'vc-risk-page',
-  imports: [...KIT, FormsModule, NumPipe, DayPipe, TitleCasePipe],
+  imports: [...KIT, FormsModule, NumPipe, DayPipe, TitleCasePipe, NprTab, ObligationsTab],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <vc-page-header title="Risk & permanence" eyebrow="Care"
       subtitle="Events that could reverse stored carbon — a farmer leaving, land-use change, fire, flood or practices being dropped — and how they compare with the buffer pool held back from credits.">
-      @if (canManage() && ctx.currentId()) { <button actions class="btn btn-primary" (click)="openCreate()"><vc-icon name="plus" />Record risk event</button> }
+      @if (canManage() && ctx.currentId() && tab() === 'events') { <button actions class="btn btn-primary" (click)="openCreate()"><vc-icon name="plus" />Record risk event</button> }
     </vc-page-header>
 
     @if (!ctx.currentId()) {
       <div class="card"><vc-empty icon="briefcase" title="Choose a project" text="Risk is tracked per project. Pick one in the top bar." /></div>
     } @else {
+      <vc-tabs [tabs]="tabs" [active]="tab()" (activeChange)="tab.set($any($event))" />
+      @if (tab() === 'npr') { <vcx-npr-tab [projectId]="ctx.currentId()!" /> }
+      @if (tab() === 'obligations') { <vcx-obligations-tab [projectId]="ctx.currentId()!" /> }
+      @if (tab() === 'events') {
       @if (summary.error()) {
         <vc-error title="Couldn't load the risk summary" [message]="summary.error()!.message" />
       } @else if (summary.data(); as s) {
@@ -138,6 +152,7 @@ const STEP: Record<string, { label: string; verb: string; hint: string }> = {
           </div>
         }
       </section>
+      }
     }
 
     <!-- create -->
@@ -193,11 +208,51 @@ const STEP: Record<string, { label: string; verb: string; hint: string }> = {
                   <textarea id="mr" class="input" rows="3" [(ngModel)]="moveResolution" placeholder="How was the risk resolved? What changed on the ground?"></textarea>
                   <span class="hint">Required. Resolved events can't be edited afterwards.</span></div>
               }
+              @if (next(e) === 'resolved' && openActions() > 0) {
+                <vc-callout tone="warn" icon="lock">{{ openActions() }} remediation action{{ openActions() === 1 ? ' is' : 's are' }} still open. Finish or cancel {{ openActions() === 1 ? 'it' : 'them' }} before resolving the event.</vc-callout>
+              }
               @if (moveError()) { <vc-error title="Status not changed" [message]="moveError()!" /> }
-              <div class="row" style="justify-content:flex-end"><button class="btn btn-primary" [disabled]="moving() || (next(e) === 'resolved' && !moveResolution.trim())" (click)="move(e)">
+              <div class="row" style="justify-content:flex-end"><button class="btn btn-primary" [disabled]="moving() || (next(e) === 'resolved' && (!moveResolution.trim() || openActions() > 0))" (click)="move(e)">
                 <vc-icon name="arrow-right" />{{ step(next(e)!).verb }}</button></div>
             </div>
           }
+
+          <section class="rem">
+            <div class="rh"><h3>Remediation actions</h3><span class="small subtle">{{ openActions() }} open</span><span class="spacer"></span>
+              @if (canManage() && e.status !== 'resolved' && !addingAction()) { <button class="btn btn-secondary btn-sm" (click)="startAction()"><vc-icon name="plus" [size]="13" />Add action</button> }</div>
+            @if (actions.loading() && !actions.data()) { <p class="small subtle">Loading…</p> }
+            @for (a of actions.data() ?? []; track a.id) {
+              <div class="ra" [class.late]="a.overdue">
+                <div class="rt"><strong>{{ a.title }}</strong><vc-badge [status]="a.status" />@if (a.overdue) { <vc-badge status="failed">Overdue</vc-badge> }</div>
+                @if (a.description) { <p class="small muted">{{ a.description }}</p> }
+                <div class="rm small subtle">Due {{ a.due_on | day }} · {{ a.owner_user_id ? people.name(a.owner_user_id) : 'No owner' }}@if (a.completed_on) { · done {{ a.completed_on | day }} }</div>
+                @if (canManage() && (a.status === 'open' || a.status === 'in_progress')) {
+                  @if (cancelling() === a.id) {
+                    <div class="row rb"><input class="input" [(ngModel)]="cancelNote" placeholder="Why is it cancelled? (kept in the audit log)" />
+                      <button class="btn btn-ghost btn-sm" (click)="cancelling.set(null)">Back</button>
+                      <button class="btn btn-danger btn-sm" [disabled]="moving() || !cancelNote.trim()" (click)="moveAction(a, 'cancelled', cancelNote.trim())">Cancel action</button></div>
+                  } @else {
+                    <div class="row rb">
+                      @if (a.status === 'open') { <button class="btn btn-ghost btn-sm" [disabled]="moving()" (click)="moveAction(a, 'in_progress')">Start</button> }
+                      <button class="btn btn-secondary btn-sm" [disabled]="moving()" (click)="moveAction(a, 'done')"><vc-icon name="check" [size]="13" />Done</button>
+                      <button class="btn btn-ghost btn-sm" [disabled]="moving()" (click)="cancelNote = ''; cancelling.set(a.id)">Cancel</button>
+                    </div>
+                  }
+                }
+              </div>
+            } @empty { @if (!addingAction()) { <p class="small subtle">No actions yet. Add what will be done to reverse or contain the loss.</p> } }
+            @if (addingAction()) {
+              <div class="ra add">
+                <input class="input" [(ngModel)]="af.title" placeholder="What will be done, e.g. Replant shade trees on 0.4 ha" aria-label="Action" />
+                <div class="row"><input type="date" class="input" [(ngModel)]="af.due_on" aria-label="Due on" />
+                  <select class="input" [(ngModel)]="af.owner" aria-label="Owner"><option value="">No owner</option>@for (u of users(); track u.id) { <option [value]="u.id">{{ u.name }}</option> }</select></div>
+                <textarea class="input" rows="2" [(ngModel)]="af.description" placeholder="Details (optional)"></textarea>
+                @if (actionError()) { <vc-error title="Not saved" [message]="actionError()!" /> }
+                <div class="row" style="justify-content:flex-end"><button class="btn btn-ghost btn-sm" (click)="addingAction.set(false)">Cancel</button>
+                  <button class="btn btn-primary btn-sm" [disabled]="moving() || af.title.trim().length < 3 || !af.due_on" (click)="addAction(e)">Add action</button></div>
+              </div>
+            }
+          </section>
 
           @if (e.status === 'resolved' && e.resolution) {
             <vc-callout tone="ok" icon="check-circle"><strong>Resolution</strong><p style="margin-top:4px">{{ e.resolution }}</p></vc-callout>
@@ -283,6 +338,11 @@ const STEP: Record<string, { label: string; verb: string; hint: string }> = {
     .stepper li.cur .dot{border-color:var(--forest-600);color:var(--forest-700);box-shadow:var(--focus)}
     .stepper li.cur .sl{color:var(--stone-900);font-weight:600}
     .next{display:flex;flex-direction:column;gap:12px;background:var(--surface-2)}
+    .rem{display:flex;flex-direction:column;gap:8px}
+    .rh{display:flex;align-items:center;gap:8px}
+    .ra{display:flex;flex-direction:column;gap:4px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+    .ra.late{border-left:3px solid var(--red-600)} .ra.add{background:var(--surface-2);gap:8px}
+    .rt{display:flex;gap:6px;align-items:center;flex-wrap:wrap} .rb{margin-top:4px}
   `],
 })
 export class RiskPage {
@@ -290,6 +350,17 @@ export class RiskPage {
   private auth = inject(AuthService);
   private toast = inject(ToastService);
   ctx = inject(ProjectContext);
+  people = inject(PeopleDirectory);
+  tabs = [{ key: 'events', label: 'Risk events' }, { key: 'npr', label: 'Permanence risk profile' }, { key: 'obligations', label: 'Monitoring obligations' }];
+  tab = signal<'events' | 'npr' | 'obligations'>('events');
+  actions = new Remote<Remediation[]>();
+  addingAction = signal(false);
+  actionError = signal<string | null>(null);
+  cancelling = signal<string | null>(null);
+  cancelNote = '';
+  af = { title: '', due_on: '', owner: '', description: '' };
+  openActions = computed(() => (this.actions.data() ?? []).filter(a => a.status === 'open' || a.status === 'in_progress').length);
+  users = computed(() => Object.entries(this.people.names()).map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name)));
 
   summary = new Remote<Summary>();
   events = new Remote<RiskEvent[]>();
@@ -385,7 +456,28 @@ export class RiskPage {
     });
   }
 
+  startAction() { this.af = { title: '', due_on: isoDate(new Date(Date.now() + 30 * 86400000)), owner: '', description: '' }; this.actionError.set(null); this.addingAction.set(true); }
+  addAction(e: RiskEvent) {
+    this.moving.set(true);
+    this.actionError.set(null);
+    this.api.post<Remediation>(`/risk-events/${e.id}/remediation-actions`, { title: this.af.title.trim(), due_on: this.af.due_on, owner_user_id: this.af.owner || null, description: this.af.description.trim() }).subscribe({
+      next: () => { this.moving.set(false); this.addingAction.set(false); this.toast.success('Remediation action added'); this.actions.load(this.api.get<Remediation[]>(`/risk-events/${e.id}/remediation-actions`), true); },
+      error: (err: ApiError) => { this.moving.set(false); this.actionError.set(apiMessage(err)); },
+    });
+  }
+  moveAction(a: Remediation, status: Remediation['status'], note = '') {
+    this.moving.set(true);
+    this.api.post<Remediation>(`/remediation-actions/${a.id}/status`, { status, note }).subscribe({
+      next: r => { this.moving.set(false); this.cancelling.set(null); this.actions.data.update(xs => (xs ?? []).map(x => (x.id === r.id ? r : x))); this.toast.success(status === 'done' ? 'Action done' : status === 'cancelled' ? 'Action cancelled' : 'Action started'); },
+      error: (err: ApiError) => { this.moving.set(false); this.toast.apiError(err, 'Not changed'); },
+    });
+  }
+
   openDetail(e: RiskEvent) {
+    this.people.load();
+    this.addingAction.set(false);
+    this.cancelling.set(null);
+    this.actions.load(this.api.get<Remediation[]>(`/risk-events/${e.id}/remediation-actions`));
     this.sel.set(e);
     this.editing.set(false);
     this.moveNote = '';

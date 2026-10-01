@@ -286,3 +286,19 @@ def test_farmer_statement(client, org, as_role):
     me = login(client, make_user(org, "farmer", scope={"farmer_id": f0}))
     assert client.get(f"/api/farmers/{f0}/statement", headers=me).status_code == 200
     assert client.get(f"/api/farmers/{f1}/statement", headers=me).status_code == 404
+
+
+def test_pool_excludes_control_site_fields(client, org, as_role):
+    """QA2 control-site fields are enrolled for stratification only: their hosts don't share the credit revenue."""
+    w = fx.world(org, n_farmers=3)
+    f0, f1, f2 = (str(x) for x in w["field_ids"])
+    inputs = {"sources": {"strata": [{"code": "Z1", "role": "project", "field_ids": [f0, f1]},
+                                     {"code": "C1", "role": "control", "control_for_code": "Z1", "field_ids": [f2]}]}}
+    admin = as_role("programme_admin")
+    batch = fx.issued_batch(client, admin, fx.approved_run(org, w, inputs=inputs))
+    sale = fx.delivered_sale(client, admin, batch["id"], fx.buyer(client, admin)["id"], quantity=5)
+    _approved_rule(client, as_role, w["programme_id"], weights={"area": 1.0})
+    r = client.post(f"/api/sales/{sale['id']}/benefit-pool", headers=as_role("finance_maker"))
+    assert r.status_code == 201, r.text
+    paid = {e["farmer_id"] for e in r.json()["entitlements"]}
+    assert paid == {str(w["farmer_ids"][0]), str(w["farmer_ids"][1])}

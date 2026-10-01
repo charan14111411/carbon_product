@@ -1,9 +1,12 @@
 import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
+import { ActivatedRoute } from '@angular/router';
 import { AuthService } from '../../core/auth.service';
 import { Icon } from '../../ui/icon';
 import { Callout, PageHeader, Tabs } from '../../ui/kit';
 import { LabBatches } from './lab-batches';
 import { LabCalibrations } from './lab-calibrations';
+import { LabCampaigns } from './lab-campaigns';
+import { LabChanges } from './lab-changes';
 import { LabContext } from './lab-context';
 import { LabEntry } from './lab-entry';
 import { LabImport } from './lab-import';
@@ -12,7 +15,7 @@ import { LabResults } from './lab-results';
 
 @Component({
   selector: 'vc-lab-page',
-  imports: [PageHeader, Tabs, Icon, Callout, LabResults, LabEntry, LabImport, LabBatches, LabLabs, LabCalibrations],
+  imports: [PageHeader, Tabs, Icon, Callout, LabResults, LabEntry, LabImport, LabBatches, LabLabs, LabCalibrations, LabCampaigns, LabChanges],
   providers: [LabContext],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
@@ -39,6 +42,8 @@ import { LabResults } from './lab-results';
       @case ('enter') { <vc-lab-entry /> }
       @case ('import') { <vc-lab-import /> }
       @case ('batches') { <vc-lab-batches /> }
+      @case ('campaigns') { <vc-lab-campaigns /> }
+      @case ('changes') { <vc-lab-changes /> }
       @case ('labs') { <vc-lab-labs /> }
       @case ('calibrations') { <vc-lab-calibrations /> }
     }
@@ -52,12 +57,17 @@ import { LabResults } from './lab-results';
 export class LabPage {
   private auth = inject(AuthService);
   lab = inject(LabContext);
-  tab = signal('results');
+  private route = inject(ActivatedRoute);
+  tab = signal(this.route.snapshot.queryParamMap.get('tab') ?? 'results');
 
   tabs = computed(() => {
     const t = [{ key: 'results', label: 'Results' }];
     if (this.auth.can('lab.submit')) t.push({ key: 'enter', label: 'Enter results' }, { key: 'import', label: 'Import CSV' });
-    t.push({ key: 'batches', label: 'Batches' }, { key: 'labs', label: 'Labs' }, { key: 'calibrations', label: 'Calibrations' });
+    t.push({ key: 'batches', label: 'Batches' });
+    if (this.auth.can('data.read')) t.push({ key: 'campaigns', label: 'Campaign progress' });
+    t.push({ key: 'labs', label: 'Labs' });
+    if (this.auth.can('data.read')) t.push({ key: 'changes', label: 'Lab changes' });
+    t.push({ key: 'calibrations', label: 'Calibrations' });
     return t;
   });
 

@@ -1,22 +1,23 @@
 import { ChangeDetectionStrategy, Component, computed, effect, inject, signal, untracked } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { Router } from '@angular/router';
+import { ActivatedRoute, Router } from '@angular/router';
 import { ApiError, ApiService } from '../../core/api.service';
 import { AuthService } from '../../core/auth.service';
 import { DayPipe, HumanPipe, NumPipe } from '../../core/format';
 import { ProjectContext } from '../../core/project-context.service';
 import { Icon } from '../../ui/icon';
 import { Badge, DataClass, Empty, ErrorBox, Loading, PageHeader, Progress, Tabs } from '../../ui/kit';
+import { AnnexButtons } from './annex';
 import { CampaignModal } from './campaign-modal';
 import { TraceDrawer } from './trace';
-import { Campaign, Stratum } from './types';
+import { Campaign, STRATIFICATION_FACTORS, Stratum } from './types';
 import { ZoneModal } from './zone-modal';
 
 @Component({
   selector: 'vc-sampling-page',
   imports: [
     FormsModule, PageHeader, Tabs, Loading, ErrorBox, Empty, Badge, DataClass, Progress, Icon, DayPipe, NumPipe, HumanPipe,
-    ZoneModal, CampaignModal, TraceDrawer,
+    ZoneModal, CampaignModal, TraceDrawer, AnnexButtons,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
@@ -105,6 +106,12 @@ import { ZoneModal } from './zone-modal';
             <button class="btn btn-primary" (click)="openZone(null)"><vc-icon name="plus" />New zone</button>
           }
         </div>
+        @if (ctx.currentId()) {
+      <div class="annexbar">
+        <p class="subtle small">The strata and points annex lists every zone version and every sampling point, with intended and actual coordinates. It is submitted at each verification.</p>
+        <vc-annex-buttons [projectId]="ctx.currentId()!" [projectCode]="ctx.current()?.code ?? ''" />
+      </div>
+        }
         <section class="card">
           @if (sLoading()) {
             <vc-loading [rows]="5" />
@@ -118,16 +125,23 @@ import { ZoneModal } from './zone-modal';
             <div class="table-wrap">
               <table class="table">
                 <thead><tr>
-                  <th>Code</th><th>Name</th><th>Role</th><th class="num">Fields</th><th class="num">Area</th><th>Version</th><th>Effective</th><th></th>
+                  <th>Code</th><th>Name and stratification factors</th><th>Unit</th><th>Role</th><th class="num">Fields</th><th class="num">Area</th><th>Version</th><th>Effective</th><th></th>
                 </tr></thead>
                 <tbody>
                   @for (s of strata(); track s.id) {
                     <tr [class.hist]="!s.is_current">
-                      <td><code>{{ s.code }}</code></td>
+                      <td class="nowrap"><code>{{ s.code }}</code></td>
                       <td>
                         <div>{{ s.name }}</div>
-                        @if (criteria(s); as c) { <div class="subtle small">{{ c }}</div> }
+                        @if (factorList(s); as fl) {
+                          @if (fl.length) {
+                            <div class="facs">@for (f of fl; track f.k) { <span class="fac"><em>{{ f.label }}</em>{{ f.v }}</span> }</div>
+                          } @else {
+                            <div class="nofac small"><vc-icon name="circle-alert" [size]="13" />No stratification factors reported</div>
+                          }
+                        }
                       </td>
+                      <td class="nowrap"><code class="small">{{ s.quantification_unit || s.code }}</code></td>
                       <td>
                         <vc-badge [status]="s.role === 'project' ? 'active' : 'info'">{{ s.role === 'project' ? 'Project' : 'Control' }}</vc-badge>
                         @if (s.control_for_code) { <span class="subtle small"> for {{ s.control_for_code }}</span> }
@@ -179,6 +193,12 @@ import { ZoneModal } from './zone-modal';
     .legend i{width:8px;height:8px;border-radius:2px;display:inline-block}
     .noprog{border-top:1px solid var(--stone-100);padding-top:12px}
     tr.hist td{color:var(--text-3);background:var(--surface-2)}
+    .annexbar{display:flex;align-items:center;gap:16px;margin:0 0 14px;padding:10px 14px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);flex-wrap:wrap}
+    .annexbar p{flex:1;min-width:240px}
+    .facs{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+    .fac{display:inline-flex;gap:5px;font-size:11.5px;padding:1px 7px;border-radius:8px;background:var(--sand-100);border:1px solid var(--border);color:var(--stone-700)}
+    .fac em{font-style:normal;color:var(--text-3)}
+    .nofac{display:inline-flex;align-items:center;gap:5px;margin-top:4px;color:var(--amber-600)}
     @media (max-width:760px){.cards{grid-template-columns:1fr}.trace .input{width:100%}}
   `],
 })
@@ -188,7 +208,8 @@ export class SamplingPage {
   ctx = inject(ProjectContext);
   router = inject(Router);
 
-  tab = signal<string>('campaigns');
+  private route = inject(ActivatedRoute);
+  tab = signal<string>(this.route.snapshot.queryParamMap.get('tab') === 'zones' ? 'zones' : 'campaigns');
   campaigns = signal<Campaign[]>([]);
   cLoading = signal(true);
   cError = signal<string | null>(null);
@@ -211,6 +232,12 @@ export class SamplingPage {
   ]);
 
   constructor() {
+    // Deep links such as ?new=zone or ?new=campaign open the matching form once the project is known.
+    const want = this.route.snapshot.queryParamMap.get('new');
+    effect(() => {
+      if (!want || !this.ctx.currentId() || !this.auth.can('sampling.plan')) return;
+      untracked(() => (want === 'zone' ? this.openZone(null) : want === 'campaign' ? this.campOpen.set(true) : null));
+    });
     effect(() => {
       if (!this.ctx.currentId()) return;
       untracked(() => { this.loadCampaigns(); this.loadStrata(); });
@@ -256,7 +283,12 @@ export class SamplingPage {
     this.traceOpen.set(true);
   }
 
-  criteria(s: Stratum): string {
-    return Object.entries(s.criteria ?? {}).map(([, v]) => String(v)).filter(Boolean).join(' · ');
+  factorList(s: Stratum): { k: string; label: string; v: string }[] {
+    const order = STRATIFICATION_FACTORS.map(f => f.key);
+    const rank = (k: string) => (order.indexOf(k) + 1 || 99);
+    return Object.entries(s.criteria ?? {})
+      .filter(([, v]) => v !== null && v !== '')
+      .sort(([a], [b]) => rank(a) - rank(b))
+      .map(([k, v]) => ({ k, label: STRATIFICATION_FACTORS.find(f => f.key === k)?.label ?? k.replace(/_/g, ' '), v: String(v).replace(/_/g, ' ') }));
   }
 }

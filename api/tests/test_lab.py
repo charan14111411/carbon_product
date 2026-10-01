@@ -9,6 +9,8 @@ from tests._p1b_factories import Flow, full_values, make_pack, set_project_pack
 from tests.conftest import login, make_org, make_user
 
 PDF = b"%PDF-1.4\n% test certificate\n"
+CAL_APPENDIX4 = {"rpiq": 2.4, "lin_ccc": 0.93, "split_method": "random 70/30", "n_peer_reviewed_refs": 4,
+                 "spectral_range": "4000-600 cm-1", "instrument": "Bruker Alpha II"}
 
 
 class LabFlow(Flow):
@@ -136,7 +138,8 @@ def test_accept_requires_four_eyes_certificate_and_permitted_method(client, org)
         row.value = 9.9
         with pytest.raises(ImmutableRecord):
             s.flush()
-    wb = f.result(layer_id=f.layers[1]["id"], method="walkley_black").json()
+    wb = f.result(layer_id=f.layers[1]["id"], method="walkley_black",
+                  method_justification="No dry-combustion analyser within reach for this batch").json()
     f.certify(wb["id"])
     refused = client.post(f"/api/lab-results/{wb['id']}/accept", headers=f.reviewer)
     assert refused.status_code == 409 and refused.json()["code"] == "METHOD_NOT_PERMITTED"
@@ -223,7 +226,7 @@ def test_spectral_calibration_workflow(client, org):
     assert no_cal.status_code == 422 and no_cal.json()["code"] == "CALIBRATION_REQUIRED"
     cal = client.post("/api/spectral-calibrations", headers=f.manager, json={
         "code": "MIR-SOC-1", "analyte": "soc_pct", "reference_method": "dry_combustion", "n_samples": 240,
-        "rmse": 0.12, "r2": 0.91, "valid_range": {"min": 0.2, "max": 4.5}}).json()
+        "rmse": 0.12, "r2": 0.91, "valid_range": {"min": 0.2, "max": 4.5}, **CAL_APPENDIX4}).json()
     draft = f.result(method="mir_spectroscopy", calibration_id=cal["id"])
     assert draft.json()["code"] == "CALIBRATION_NOT_APPROVED"
     assert client.post(f"/api/spectral-calibrations/{cal['id']}/approve", headers=f.manager).status_code == 403
@@ -249,3 +252,166 @@ def test_lab_results_tenant_isolation(client, org):
     assert client.post("/api/lab-results", headers=rival, json={
         "layer_id": f.layers[0]["id"], "analyte": "soc_pct", "value": 1.0, "unit": "%",
         "method": "dry_combustion", "analysed_on": "2024-03-05"}).status_code == 404
+
+
+# ------------------------------------------------------------------ VM0042 v2.2 conformance
+def _qa(client, f, rule):
+    client.post(f"/api/projects/{f.pid}/qa/run", headers=f.planner)
+    return client.get(f"/api/projects/{f.pid}/qa/findings", headers=f.planner, params={"rule": rule}).json()
+
+
+def test_detection_limit_flag_and_new_analytes(client, org):
+    f = LabFlow(client, org)
+    low = f.result(value=0.05, detection_limit=0.1)
+    assert low.status_code == 201 and low.json()["below_detection_limit"] is True and low.json()["value"] == 0.05
+    ok = f.result(layer_id=f.layers[1]["id"], value=1.2, detection_limit=0.1)
+    assert ok.json()["below_detection_limit"] is False
+    edited = client.put(f"/api/lab-results/{ok.json()['id']}", headers=f.manager, json={"value": 0.02})
+    assert edited.json()["below_detection_limit"] is True
+    mass = f.result(analyte="fine_soil_mass_g", value=412.5, unit="g", method="oven_dry_2mm_sieve")
+    assert mass.status_code == 201 and mass.json()["unit"] == "g"
+    assert f.result(analyte="inorganic_c_pct", value=0.4, unit="%", method="acid_pressure_calcimeter"
+                    ).status_code == 201
+    assert f.result(analyte="texture_sand_pct", value=101, unit="%", method="hydrometer").json()["code"] == \
+        "VALUE_OUT_OF_RANGE"
+    rows = _qa(client, f, "BELOW_DETECTION_LIMIT")
+    assert {x["entity_id"] for x in rows} == {low.json()["id"], ok.json()["id"]}
+    assert all(x["severity"] == "warning" for x in rows)
+
+
+def test_not_recommended_methods_need_justification(client, org):
+    f = LabFlow(client, org)
+    bare = f.result(method="walkley_black")
+    assert bare.status_code == 422 and bare.json()["code"] == "METHOD_JUSTIFICATION_REQUIRED"
+    assert "§8.2.1.4" in bare.json()["details"]["reference"]
+    assert f.result(method="loss_on_ignition", method_justification="too short").status_code == 422
+    wb = f.result(method="walkley_black", method_justification="Only wet-oxidation available in this district lab")
+    assert wb.status_code == 201 and wb.json()["method_recommended"] is False
+    dc = f.result(layer_id=f.layers[1]["id"])
+    assert dc.json()["method_recommended"] is True
+    rows = _qa(client, f, "METHOD_NOT_RECOMMENDED")
+    assert [(x["entity_id"], x["severity"]) for x in rows] == [(wb.json()["id"], "warning")]
+
+
+def test_lab_qc_fields_and_finding(client, org):
+    f = LabFlow(client, org)
+    assert set(f.lab["qc_evidence_missing"]) == {"iso17025", "proficiency_program", "analytical_error_report"}
+    f.result()
+    rows = _qa(client, f, "LAB_QC_EVIDENCE_MISSING")
+    assert [(x["entity_id"], x["severity"]) for x in rows] == [(f.lab["id"], "info")]
+    report = client.post("/api/evidence", headers=f.planner, data={"kind": "document"},
+                         files={"file": ("qc.pdf", b"%PDF-1.4 qc report", "application/pdf")}).json()
+    bad = client.put(f"/api/labs/{f.lab['id']}", headers=f.planner, json={"proficiency_program": "ISO"})
+    assert bad.status_code == 422
+    upd = client.put(f"/api/labs/{f.lab['id']}", headers=f.planner, json={
+        "iso17025": True, "proficiency_program": "GLOSOLAN", "analytical_error_report_id": report["id"]})
+    assert upd.status_code == 200 and upd.json()["qc_evidence_missing"] == []
+    assert _qa(client, f, "LAB_QC_EVIDENCE_MISSING")[0]["status"] == "resolved"
+
+
+def test_lab_change_requires_justification(client, org):
+    f = LabFlow(client, org)
+    first = f.result().json()
+    other = client.post("/api/labs", headers=f.planner, json={"code": "LAB-B", "name": "Second lab"}).json()
+    m = f.campaign("MON-L", kind="monitoring", revisits_campaign_id=f.camp["id"], planned_start="2027-02-01",
+                   planned_end="2027-03-01")
+    from app.modules.lab.models import LabResult as LR
+    from app.modules.sampling.models import Campaign, Sample, SoilLayer
+    with dbmod.session_factory()() as s:  # a monitoring-campaign result analysed by the other lab
+        base = s.get(LR, uuid.UUID(first["id"]))
+        layer = s.get(SoilLayer, base.layer_id)
+        smp = s.get(Sample, layer.sample_id)
+        mon = s.get(Campaign, uuid.UUID(m["id"]))
+        s2 = Sample(org_id=org, point_id=uuid.uuid4(), campaign_id=mon.id, site_id=smp.site_id,
+                    code=smp.code + "-M", collected_at=smp.collected_at, latitude=smp.latitude,
+                    longitude=smp.longitude, distance_from_site_m=0, depth_reached_cm=30, client_ref=uuid.uuid4().hex)
+        s.add(s2)
+        s.flush()
+        lay2 = SoilLayer(org_id=org, sample_id=s2.id, code=s2.code + "-D1", label_qr="QR-" + uuid.uuid4().hex[:8],
+                         depth_from_cm=0, depth_to_cm=30)
+        s.add(lay2)
+        s.flush()
+        s.add(LR(org_id=org, layer_id=lay2.id, lab_id=uuid.UUID(other["id"]), analyte="soc_pct", value=1.3, unit="%",
+                 method="dry_combustion", analysed_on=base.analysed_on, status="pending"))
+        s.commit()
+    rows = _qa(client, f, "LAB_CHANGE_UNJUSTIFIED")
+    assert [(x["entity_id"], x["severity"]) for x in rows] == [(m["id"], "blocking")]
+    assert rows[0]["details"]["unjustified_labs"] == ["LAB-B"]
+    same = client.post(f"/api/projects/{f.pid}/lab-changes", headers=f.planner, json={
+        "from_lab_id": f.lab["id"], "to_lab_id": f.lab["id"], "justification": "x" * 25,
+        "sop_consistency_statement": "y" * 25})
+    assert same.status_code == 422
+    short = client.post(f"/api/projects/{f.pid}/lab-changes", headers=f.planner, json={
+        "from_lab_id": f.lab["id"], "to_lab_id": other["id"], "justification": "closed",
+        "sop_consistency_statement": "same"})
+    assert short.status_code == 422
+    change = {"from_lab_id": f.lab["id"], "to_lab_id": other["id"],
+              "justification": "The first lab closed its soil unit in 2026.",
+              "sop_consistency_statement": "Both labs use Dumas dry combustion on air-dried < 2 mm fine earth, "
+                                           "with the same reference soils."}
+    assert client.post(f"/api/projects/{f.pid}/lab-changes", headers=f.collector, json=change).status_code == 403
+    lc = client.post(f"/api/projects/{f.pid}/lab-changes", headers=f.planner, json=change)
+    assert lc.status_code == 201, lc.text
+    assert lc.json()["to_lab_code"] == "LAB-B" and "§8.2.1.4" in lc.json()["reference"]
+    listed = client.get(f"/api/projects/{f.pid}/lab-changes", headers=f.planner).json()
+    assert [x["id"] for x in listed] == [lc.json()["id"]]
+    assert _qa(client, f, "LAB_CHANGE_UNJUSTIFIED")[0]["status"] == "resolved"
+
+
+def test_calibration_needs_appendix4_details(client, org):
+    f = LabFlow(client, org)
+    body = {"code": "MIR-X", "analyte": "soc_pct", "reference_method": "dry_combustion", "n_samples": 120,
+            "rmse": 0.1, "r2": 0.9, "valid_range": {"min": 0.1, "max": 5}}
+    bare = client.post("/api/spectral-calibrations", headers=f.manager, json=body).json()
+    assert "rpiq" in bare["approval_gaps"]
+    r = client.post(f"/api/spectral-calibrations/{bare['id']}/approve", headers=f.reviewer)
+    assert r.status_code == 409 and r.json()["code"] == "CALIBRATION_INCOMPLETE"
+    few = client.post("/api/spectral-calibrations", headers=f.manager,
+                      json={**body, "code": "MIR-Y", **CAL_APPENDIX4, "n_peer_reviewed_refs": 2}).json()
+    r = client.post(f"/api/spectral-calibrations/{few['id']}/approve", headers=f.reviewer)
+    assert r.status_code == 409 and any("peer-reviewed" in m for m in r.json()["details"]["missing"])
+    upd = client.put(f"/api/spectral-calibrations/{few['id']}", headers=f.manager, json={"n_peer_reviewed_refs": 3})
+    assert upd.json()["approval_gaps"] == []
+    ok = client.post(f"/api/spectral-calibrations/{few['id']}/approve", headers=f.reviewer)
+    assert ok.status_code == 200 and ok.json()["rpiq"] == 2.4 and ok.json()["instrument"] == "Bruker Alpha II"
+
+
+def test_spectroscopy_dry_combustion_check_and_eq73(client, org):
+    f = LabFlow(client, org, rules=full_values(permitted_soc_methods=["dry_combustion", "nir_spectroscopy"]))
+    cal = client.post("/api/spectral-calibrations", headers=f.manager, json={
+        "code": "NIR-1", "analyte": "soc_pct", "reference_method": "dry_combustion", "n_samples": 200,
+        "rmse": 0.1, "r2": 0.9, "valid_range": {"min": 0.1, "max": 5}, **CAL_APPENDIX4}).json()
+    client.post(f"/api/spectral-calibrations/{cal['id']}/approve", headers=f.reviewer)
+    empty = client.get(f"/api/campaigns/{f.camp['id']}/spectroscopy-check", headers=f.manager).json()
+    assert empty["status"] == "not_applicable" and empty["n_spectroscopy_samples"] == 0
+    for lay, v in zip(f.layers, (1.50, 1.10)):
+        r = f.result(layer_id=lay["id"], method="nir_spectroscopy", calibration_id=cal["id"], value=v)
+        assert r.status_code == 201, r.text
+    assert _qa(client, f, "SPECTROSCOPY_CHECK_LOW")[0]["severity"] == "blocking"
+    wrong = f.result(purpose="spectroscopy_check", method="walkley_black",
+                     method_justification="Only wet-oxidation available here")
+    assert wrong.status_code == 422 and wrong.json()["code"] == "INVALID_SPECTROSCOPY_CHECK"
+    for lay, v in zip(f.layers, (1.40, 1.15)):
+        chk = f.result(layer_id=lay["id"], purpose="spectroscopy_check", value=v)
+        assert chk.status_code == 201 and chk.json()["purpose"] == "spectroscopy_check"
+    dup = f.result(purpose="spectroscopy_check", value=1.3)
+    assert dup.status_code == 409 and dup.json()["code"] == "RESULT_EXISTS"
+    out = client.get(f"/api/campaigns/{f.camp['id']}/spectroscopy-check", headers=f.manager).json()
+    assert out["n_spectroscopy_samples"] == 2 and out["n_dry_combustion_checked"] == 2 and out["status"] == "ok"
+    # errors: +0.10 and -0.05 -> mean 0.025, s2 = ((0.075)^2 + (0.075)^2) / 1 = 0.01125
+    assert out["model_error"]["tvd"] == 2 and out["model_error"]["s2_model"] == pytest.approx(0.01125)
+    assert out["model_error"]["mean_error"] == pytest.approx(0.025) and "Eq. 73" in out["reference"]
+    assert _qa(client, f, "SPECTROSCOPY_CHECK_LOW")[0]["status"] == "resolved"
+    prog = client.get(f"/api/campaigns/{f.camp['id']}/lab-progress", headers=f.manager).json()
+    assert prog["analytes"]["soc_pct"]["pending"] == 2  # checks are not counted as the accounting result
+
+
+def test_unit_mismatch_finding_for_stored_result(client, org):
+    f = LabFlow(client, org)
+    r = f.result().json()
+    with dbmod.session_factory()() as s:  # e.g. a legacy import that bypassed the API
+        row = s.get(LabResult, uuid.UUID(r["id"]))
+        row.unit = "g/kg"
+        s.commit()
+    rows = _qa(client, f, "UNIT_MISMATCH")
+    assert [(x["entity_id"], x["severity"]) for x in rows] == [(r["id"], "blocking")]

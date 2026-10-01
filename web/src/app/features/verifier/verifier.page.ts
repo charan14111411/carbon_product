@@ -8,12 +8,14 @@ import { Icon } from '../../ui/icon';
 import { Badge, Callout, DataClass, Empty, ErrorBox, Hash, Loading, Modal } from '../../ui/kit';
 import { Provenance, openBlob, saveBlob } from '../calculations/calc.types';
 import { ProvenanceTree } from '../calculations/provenance-tree';
-import { Integrity, Package, VerifierAccess, VerifierQuery } from '../verification/verification.types';
+import { Annex, ConformanceItem, Integrity, Package, VerifierAccess, VerifierQuery, annexCsv } from '../verification/verification.types';
+import { Conformance } from '../verification/conformance';
+import { EquationTrail } from '../calculations/vm0042-panels';
 import { EvidenceExplorer, FileRef, Subject } from './evidence-explorer';
 import { VerifierApi } from './verifier.service';
 
 interface Session { package: Package; verifier: VerifierAccess; status: string; integrity: Integrity }
-type Section = 'summary' | 'evidence' | 'provenance' | 'queries' | 'decision';
+type Section = 'summary' | 'conformance' | 'equations' | 'evidence' | 'provenance' | 'queries' | 'decision';
 type Pkg = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
 const SNIPPET = `import hashlib, json
@@ -26,7 +28,7 @@ print(hashlib.sha256(text.encode("utf-8")).hexdigest())`;
 
 @Component({
   selector: 'vc-verifier-page',
-  imports: [FormsModule, Brand, Icon, Badge, DataClass, Hash, Loading, ErrorBox, Empty, Callout, Modal, ProvenanceTree, EvidenceExplorer, NumPipe, DayPipe],
+  imports: [FormsModule, Brand, Icon, Badge, DataClass, Hash, Loading, ErrorBox, Empty, Callout, Modal, ProvenanceTree, EvidenceExplorer, Conformance, EquationTrail, NumPipe, DayPipe],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <header class="top">
@@ -87,16 +89,27 @@ print(hashlib.sha256(text.encode("utf-8")).hexdigest())`;
 
             <div class="figs">
               <div class="card fig acc">
-                <div class="fl">Net credits claimed <vc-dc cls="CALCULATED" /></div>
+                <div class="fl">VCUs claimed · Eq. 79 <vc-dc cls="CALCULATED" /></div>
                 <div class="fv num">{{ s.package.summary.net_credits_t_co2e | num: 1 }}<small>tCO₂e</small></div>
               </div>
-              <div class="card fig"><div class="fl">Emission reductions</div><div class="fv num">{{ s.package.summary.reductions_t_co2e | num: 1 }}<small>t</small></div></div>
-              <div class="card fig"><div class="fl">Carbon removals</div><div class="fv num">{{ s.package.summary.removals_t_co2e | num: 1 }}<small>t</small></div></div>
+              <div class="card fig"><div class="fl">VCU_ER reductions</div><div class="fv num">{{ s.package.summary.reductions_t_co2e | num: 1 }}<small>t</small></div></div>
+              <div class="card fig"><div class="fl">VCU_CR removals</div><div class="fv num">{{ s.package.summary.removals_t_co2e | num: 1 }}<small>t</small></div></div>
               <div class="card fig"><div class="fl">Result before uncertainty</div><div class="fv num">{{ s.package.summary.net_before_uncertainty_t_co2e | num: 1 }}<small>t</small></div></div>
-              <div class="card fig"><div class="fl">Uncertainty deduction</div><div class="fv num">{{ s.package.summary.uncertainty_deduction_t_co2e | num: 1 }}<small>t</small></div></div>
-              <div class="card fig"><div class="fl">Non-permanence buffer</div><div class="fv num">{{ s.package.summary.buffer_t_co2e | num: 1 }}<small>t</small></div></div>
+              <div class="card fig"><div class="fl">Effect of uncertainty</div><div class="fv num">{{ s.package.summary.uncertainty_deduction_t_co2e | num: 1 }}<small>t</small></div></div>
+              <div class="card fig"><div class="fl">Buffer (stock changes)</div><div class="fv num">{{ s.package.summary.buffer_t_co2e | num: 1 }}<small>t</small></div></div>
             </div>
 
+
+            @if (pkg() && conformance().length) {
+              <button type="button" class="card conf-strip" (click)="go('conformance')">
+                <span class="cs-ic" [class.bad]="notMet() > 0"><vc-icon [name]="notMet() ? 'shield-alert' : 'shield-check'" [size]="18" /></span>
+                <div class="cs-t">
+                  <strong>VM0042 v2.2 conformance: {{ metCount() }} of {{ applicable() }} applicable requirements met</strong>
+                  <span>{{ notMet() ? notMet() + ' not met — review them in the conformance checklist.' : 'Every applicable requirement the package can evidence is met.' }}</span>
+                </div>
+                <vc-icon name="arrow-right" [size]="16" />
+              </button>
+            }
             <div class="grid grid-2 two">
               <section class="card">
                 <div class="card-head"><h3>Scope and methodology</h3></div>
@@ -120,6 +133,7 @@ print(hashlib.sha256(text.encode("utf-8")).hexdigest())`;
                 <div class="card-foot">
                   <button class="btn btn-secondary btn-sm" (click)="download('json')"><vc-icon name="file-json" [size]="14" />Download package JSON</button>
                   @if (s.package.pdf_file_id) { <button class="btn btn-secondary btn-sm" (click)="download('pdf')"><vc-icon name="download" [size]="14" />PDF report</button> }
+                  @if (annex()) { <button class="btn btn-secondary btn-sm" (click)="downloadAnnex()"><vc-icon name="download" [size]="14" />Strata &amp; points annex (CSV)</button> }
                 </div>
               </section>
 
@@ -147,6 +161,28 @@ print(hashlib.sha256(text.encode("utf-8")).hexdigest())`;
                 </div>
               </section>
             </div>
+          }
+
+          @case ('conformance') {
+            <div class="intro row">
+              <div><h2>VM0042 v2.2 conformance</h2><p class="muted small">Each requirement the sealed package can evidence, with the methodology section and page. Built when the package was issued — check each against the evidence.</p></div>
+              <span class="spacer"></span>
+              @if (annex()) { <button class="btn btn-secondary" (click)="downloadAnnex()"><vc-icon name="download" />Strata &amp; points annex (CSV)</button> }
+            </div>
+            <section class="card">
+              @if (pkg()) { <vc-conformance [items]="conformance()" [askable]="s.status === 'in_review'" (ask)="askConformance($event)" /> }
+              @else if (pkgError()) { <div class="card-body"><vc-error title="Couldn't read the package" [message]="pkgError()!" /></div> }
+              @else { <vc-loading [rows]="6" /> }
+            </section>
+          }
+
+          @case ('equations') {
+            <div class="intro"><h2>Equation trail</h2><p class="muted small">Every step from soil-carbon change to VCUs, in order, with its VM0042 v2.2 equation number and value.</p></div>
+            <section class="card">
+              @if (pkg()) { <vc-equation-trail [rows]="equations()" /> }
+              @else if (pkgError()) { <div class="card-body"><vc-error title="Couldn't read the package" [message]="pkgError()!" /></div> }
+              @else { <vc-loading [rows]="6" /> }
+            </section>
           }
 
           @case ('evidence') {
@@ -302,6 +338,11 @@ print(hashlib.sha256(text.encode("utf-8")).hexdigest())`;
     .fig.acc{background:linear-gradient(135deg,var(--forest-800),var(--forest-600));border-color:var(--forest-700)}
     .fig.acc .fl{color:rgba(255,255,255,.78)} .fig.acc .fv{color:#fff;font-size:30px} .fig.acc small{color:rgba(255,255,255,.7)}
     .two{margin-top:16px}
+    .conf-strip{display:flex;align-items:center;gap:14px;width:100%;margin-top:16px;padding:14px 18px;text-align:left;font:inherit;cursor:pointer;color:var(--stone-600)}
+    .conf-strip:hover{border-color:var(--forest-400);background:var(--forest-50)}
+    .cs-ic{display:grid;place-items:center;width:36px;height:36px;border-radius:10px;background:var(--ok-soft);color:var(--forest-600);flex:none}
+    .cs-ic.bad{background:var(--danger-soft);color:var(--red-600)}
+    .cs-t{flex:1;display:flex;flex-direction:column} .cs-t strong{color:var(--stone-900);font-weight:600} .cs-t span{font-size:12.5px}
     .ok,.bad{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;font-weight:500;padding:3px 9px;border-radius:999px}
     .ok{background:var(--ok-soft);color:var(--forest-700)} .bad{background:var(--danger-soft);color:var(--red-600)}
     .fh{word-break:break-all}
@@ -369,6 +410,8 @@ export class VerifierPage {
   openQuestions = computed(() => this.questions().filter(q => q.status === 'open').length);
   nav = computed(() => [
     { key: 'summary' as Section, label: 'Summary', icon: 'dashboard', count: 0 },
+    { key: 'conformance' as Section, label: 'Conformance', icon: 'list-checks', count: this.notMet() },
+    { key: 'equations' as Section, label: 'Equations', icon: 'sigma', count: 0 },
     { key: 'evidence' as Section, label: 'Evidence', icon: 'file-search', count: 0 },
     { key: 'provenance' as Section, label: 'Provenance', icon: 'network', count: 0 },
     { key: 'queries' as Section, label: 'Queries', icon: 'message', count: this.openQuestions() },
@@ -386,6 +429,12 @@ export class VerifierPage {
     const pk = this.pkg()?.['methodology']?.['pack'];
     return pk ? `${pk['methodology_code']} v${pk['methodology_version']} rev ${pk['revision']}${pk['title'] ? ' — ' + pk['title'] : ''}` : '—';
   });
+  conformance = computed<ConformanceItem[]>(() => this.pkg()?.['conformance'] ?? []);
+  equations = computed(() => this.pkg()?.['equations'] ?? []);
+  annex = computed<Annex | null>(() => this.pkg()?.['annex'] ?? null);
+  notMet = computed(() => this.conformance().filter(c => c.status === 'not_met').length);
+  metCount = computed(() => this.conformance().filter(c => c.status === 'met').length);
+  applicable = computed(() => this.metCount() + this.notMet());
   usedResults = computed(() => (this.pkg()?.['lab_results'] ?? []).filter((r: Pkg) => r['used_in_calculation']).length);
 
   gate = computed(() => {
@@ -494,6 +543,17 @@ export class VerifierPage {
     navigator.clipboard?.writeText(t);
     this.copied.set(true);
     setTimeout(() => this.copied.set(false), 1500);
+  }
+
+  downloadAnnex() {
+    const a = this.annex();
+    const p = this.session()?.package;
+    if (!a || !p) return;
+    saveBlob(new Blob([annexCsv(a)], { type: 'text/csv' }), `${p.summary.project_code}_${p.summary.period_label}_annex_v${p.version}.csv`);
+  }
+
+  askConformance(i: ConformanceItem) {
+    this.startAsk({ type: 'conformance', id: i.ref, label: `${i.requirement} (${i.ref})` });
   }
 
   startAsk(s: Subject) { this.question = ''; this.asking.set(s); }

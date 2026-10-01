@@ -5,6 +5,7 @@ import { Chart } from '../../ui/chart';
 import { KIT } from '../../ui/kit';
 import { Remote, TIER_ORDER, tierMeta } from './shared';
 import { QualityBar, TierChip } from './tier-chip';
+import { StationCheck } from './station-check';
 
 interface CovParam { tier: number; provider: string | null; quality: number }
 interface CovField {
@@ -24,7 +25,7 @@ const PARAM_COLS = [
 
 @Component({
   selector: 'vc-coverage-tab',
-  imports: [...KIT, Chart, TierChip, QualityBar, DayPipe, NumPipe],
+  imports: [...KIT, Chart, TierChip, QualityBar, DayPipe, NumPipe, StationCheck],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     @if (cov.loading()) {
@@ -85,6 +86,8 @@ const PARAM_COLS = [
           </section>
         </div>
 
+        <vc-station-check [projectId]="projectId()" (openField)="openField.emit($event)" />
+
         <section class="card">
           <div class="card-head"><h3>Field by field</h3><span class="subtle small">Source chosen for each key parameter</span></div>
           <div class="table-wrap">
@@ -115,6 +118,7 @@ const PARAM_COLS = [
             </table>
           </div>
         </section>
+
       }
     }
   `,

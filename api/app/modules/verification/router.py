@@ -39,6 +39,13 @@ def get_package(package_id: str, user: CurrentUser = Depends(_read), db: Session
     return service.package_out(get_owned(db, VerificationPackage, package_id, user, "Package"))
 
 
+@router.get("/packages/{package_id}/annex.csv")
+def package_annex(package_id: str, user: CurrentUser = Depends(_read), db: Session = Depends(get_db)):
+    vp = get_owned(db, VerificationPackage, package_id, user, "Package")
+    return Response(service.annex_csv(db, vp), media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="annex_v{vp.version}.csv"'})
+
+
 @router.get("/packages/{package_id}/verify")
 def verify_package(package_id: str, user: CurrentUser = Depends(_read),
                    db: Session = Depends(get_db)) -> dict[str, Any]:

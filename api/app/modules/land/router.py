@@ -12,13 +12,15 @@ from app.modules.land import service
 from app.modules.land.models import Enrolment, Farm, Field
 from app.modules.land.schemas import (
     BoundaryVersionOut, ContainsOut, EnrolmentIn, EnrolmentOut, FarmIn, FarmOut, FarmPatch, FieldIn, FieldOut,
-    FieldPage, FieldPatch, FieldStatus, LandUseIn, LandUseOut, WithdrawIn,
+    FieldPage, FieldPatch, FieldStatus, LandUseIn, LandUseOut, TenureIn, TenureOut, TenureVerifyIn, WithdrawIn,
 )
 
 router = APIRouter(tags=["Land"])
 # Field collectors map fields, so land writers may also read land data.
 _read = require(P.READ, P.MANAGE_LAND)
 _write = require(P.MANAGE_LAND)
+# Verifying land tenure is a programme-manager decision (four-eyes: never the person who recorded it).
+_verify = require(P.MANAGE_PROGRAMMES)
 
 
 # ------------------------------------------------------------------ farms
@@ -97,6 +99,25 @@ def list_land_use(field_id: str, user: CurrentUser = Depends(_read), db: Session
 @router.post("/fields/{field_id}/land-use", response_model=LandUseOut, status_code=201)
 def add_land_use(field_id: str, body: LandUseIn, user: CurrentUser = Depends(_write), db: Session = Depends(get_db)):
     return service.add_land_use(db, user, field_id, body.model_dump())
+
+
+# ------------------------------------------------------------------ land tenure
+@router.get("/fields/{field_id}/tenure", response_model=list[TenureOut])
+def list_tenure(field_id: str, user: CurrentUser = Depends(_read), db: Session = Depends(get_db)):
+    return service.list_tenure(db, user, field_id)
+
+
+@router.post("/fields/{field_id}/tenure", response_model=TenureOut, status_code=201)
+def add_tenure(field_id: str, body: TenureIn, user: CurrentUser = Depends(_write), db: Session = Depends(get_db)):
+    """Record who controls the field (owned, leased...) with the supporting documents. Starts as pending."""
+    return service.add_tenure(db, user, field_id, body.model_dump())
+
+
+@router.post("/tenure/{tenure_id}/verify", response_model=TenureOut)
+def verify_tenure(tenure_id: str, body: TenureVerifyIn, user: CurrentUser = Depends(_verify),
+                  db: Session = Depends(get_db)):
+    """Verify or reject a tenure record. The person who recorded it can't verify it."""
+    return service.verify_tenure(db, user, tenure_id, body.decision, body.note)
 
 
 # ------------------------------------------------------------------ enrolment

@@ -24,10 +24,11 @@ from app.modules.land.models import Enrolment, Field
 from app.modules.programmes.models import Project
 from app.modules.sampling import domain
 from app.modules.sampling.models import (
-    Campaign, CustodyEvent, Sample, SamplePlan, SamplingPoint, Site, SoilLayer, Stratum,
+    Campaign, CustodyEvent, Sample, SamplePlan, SamplingDesign, SamplingDesignUnit, SamplingPoint, Site, SoilLayer,
+    Stratum,
 )
 from app.modules.sampling.schemas import (
-    AssignIn, CampaignIn, CustodyIn, PlanIn, PlanPatch, SampleIn, StratumIn,
+    AssignIn, CampaignIn, CustodyIn, PlanIn, PlanPatch, SampleIn, SamplingDesignIn, StratumIn,
 )
 
 
@@ -95,6 +96,14 @@ def open_strata(db: Session, org_id: uuid.UUID, project_id: uuid.UUID) -> list[S
 
 
 def create_stratum(db: Session, user: CurrentUser, project: Project, body: StratumIn) -> Stratum:
+    problems = domain.stratification_problems(body.criteria)
+    if problems:
+        raise ValidationFailed(
+            "Report the stratification factors used for this zone. " + " ".join(problems),
+            code="STRATIFICATION_FACTORS_REQUIRED",
+            details={"problems": problems, "allowed": list(domain.STRATIFICATION_FACTORS),
+                     "reference": domain.REF["stratification"]},
+        )
     ids: list[uuid.UUID] = []
     for raw in body.field_ids:
         try:
@@ -150,6 +159,7 @@ def create_stratum(db: Session, user: CurrentUser, project: Project, body: Strat
     s = Stratum(
         org_id=user.org_id, created_by=user.id, project_id=project.id, code=body.code, name=body.name,
         role=body.role, control_for_code=body.control_for_code, criteria=body.criteria,
+        quantification_unit=body.quantification_unit or body.code,
         field_ids=[str(f) for f in ids], area_ha=round(sum(f.area_ha for f in fields), 4), version=version,
         effective_from=body.effective_from, effective_to=None,
     )
@@ -161,7 +171,10 @@ def create_stratum(db: Session, user: CurrentUser, project: Project, body: Strat
 def stratum_out(s: Stratum, field_codes: dict[str, str] | None = None) -> dict:
     return {
         "id": str(s.id), "project_id": str(s.project_id), "code": s.code, "name": s.name, "role": s.role,
-        "control_for_code": s.control_for_code, "criteria": s.criteria or {}, "field_ids": list(s.field_ids or []),
+        "quantification_unit": s.quantification_unit or s.code,
+        "control_for_code": s.control_for_code, "criteria": s.criteria or {},
+        "stratification_factors": sorted(k for k in (s.criteria or {}) if k in domain.STRATIFICATION_FACTORS),
+        "field_ids": list(s.field_ids or []),
         "field_codes": [field_codes.get(f) for f in (s.field_ids or [])] if field_codes else None,
         "area_ha": s.area_ha, "area_data_class": "DERIVED", "version": s.version,
         "effective_from": _iso(s.effective_from), "effective_to": _iso(s.effective_to),
@@ -202,6 +215,14 @@ def create_campaign(db: Session, user: CurrentUser, project: Project, body: Camp
                                code="REVISIT_REQUIRED")
 
     rules = approved_rules(db, project)
+    season_check = _season_check(db, user, project, body, revisited, rules)
+    if season_check and season_check["mismatch"] and not (body.season_override_reason or "").strip():
+        raise ValidationFailed(
+            f"This monitoring campaign starts {season_check['gap_days']} days (by time of year) away from "
+            f"{season_check['reference_campaign']}; sampling and re-sampling must be in the same season "
+            f"(within ±{season_check['window_days']} days). Move the dates, or give a season override reason.",
+            code="SEASON_MISMATCH", details={**season_check, "reference": domain.REF["season"]},
+        )
     if rules:
         design_rule = rules.get("sampling_design")
         if body.kind == "monitoring" and design_rule in ("paired", "independent") and design_rule != body.design:
@@ -210,7 +231,8 @@ def create_campaign(db: Session, user: CurrentUser, project: Project, body: Camp
         stock_depth = rules.get("stock_depth_cm")
         if stock_depth is not None and body.depth_to_cm < stock_depth:
             raise ValidationFailed(f"The methodology requires sampling to at least {stock_depth:g} cm.",
-                                   code="DEPTH_BELOW_RULE", details={"stock_depth_cm": stock_depth})
+                                   code="DEPTH_BELOW_RULE",
+                                   details={"stock_depth_cm": stock_depth, "reference": domain.REF["depth"]})
         if body.kind == "monitoring":
             reference = revisited or db.scalar(select(Campaign).where(
                 Campaign.org_id == user.org_id, Campaign.project_id == project.id, Campaign.kind == "baseline"
@@ -234,11 +256,37 @@ def create_campaign(db: Session, user: CurrentUser, project: Project, body: Camp
         planned_start=body.planned_start, planned_end=body.planned_end, depth_from_cm=body.depth_from_cm,
         depth_to_cm=body.depth_to_cm,
         placement_seed=body.placement_seed if body.placement_seed is not None else secrets.randbelow(2**31),
-        status="planned",
+        status="planned", season=body.season,
+        season_override_reason=body.season_override_reason if season_check and season_check["mismatch"] else None,
     )
     db.add(c)
     audit(db, user, "campaign.create", c)
     return c
+
+
+def season_reference(db: Session, org_id: uuid.UUID, project_id: uuid.UUID,
+                     revisited: Campaign | None) -> Campaign | None:
+    return revisited or db.scalar(select(Campaign).where(
+        Campaign.org_id == org_id, Campaign.project_id == project_id, Campaign.kind == "baseline"
+    ).order_by(Campaign.planned_start))
+
+
+def season_window(rules: dict | None) -> int:
+    raw = (rules or {}).get("season_window_days")
+    return int(raw) if raw is not None else domain.SEASON_WINDOW_DAYS
+
+
+def _season_check(db: Session, user: CurrentUser, project: Project, body: CampaignIn, revisited: Campaign | None,
+                  rules: dict | None) -> dict | None:
+    if body.kind != "monitoring":
+        return None
+    reference = season_reference(db, user.org_id, project.id, revisited)
+    if reference is None:
+        return None
+    gap = domain.day_of_year_gap(reference.planned_start, body.planned_start)
+    window = season_window(rules)
+    return {"reference_campaign": reference.code, "reference_start": reference.planned_start.isoformat(),
+            "gap_days": gap, "window_days": window, "mismatch": gap > window}
 
 
 def campaign_progress(db: Session, c: Campaign) -> dict:
@@ -267,6 +315,7 @@ def campaign_out(db: Session, c: Campaign, *, progress: bool = True) -> dict:
         "planned_start": _iso(c.planned_start), "planned_end": _iso(c.planned_end),
         "depth_from_cm": c.depth_from_cm, "depth_to_cm": c.depth_to_cm, "placement_seed": c.placement_seed,
         "status": c.status, "next_status": domain.CAMPAIGN_FLOW.get(c.status),
+        "season": c.season, "season_override_reason": c.season_override_reason,
     }
     if progress:
         out["progress"] = campaign_progress(db, c)
@@ -319,7 +368,11 @@ def _floor(db: Session, project: Project) -> tuple[int | None, list[dict]]:
         return None, [{"code": "RULE_PACK_NOT_APPROVED",
                        "message": "The project's methodology rules are not approved yet, so the minimum samples "
                                   "per zone was not checked."}]
-    return int(rs.require("min_samples_per_stratum")), []
+    configured = [int(v) for v in (rs.get("min_composites_per_stratum"), rs.get("min_samples_per_stratum"))
+                  if v is not None]
+    if not configured:
+        rs.require("min_samples_per_stratum")  # raises RuleMissing naming the rule
+    return max(configured), []
 
 
 def _apply_floor(method: str, n: int, inputs: dict, floor: int | None) -> tuple[int, dict]:
@@ -380,7 +433,10 @@ def approve_plan(db: Session, user: CurrentUser, plan: SamplePlan) -> SamplePlan
     campaign = db.get(Campaign, plan.campaign_id)
     floor, _ = _floor(db, _project_of(db, campaign))
     if floor is not None and plan.n_required < floor:
-        raise Blocked(f"The methodology requires at least {floor} samples per zone.", code="BELOW_MINIMUM_SAMPLES")
+        raise Blocked(f"The methodology requires at least {floor} composite samples per zone.",
+                      code="BELOW_MINIMUM_SAMPLES",
+                      details={"min_composites_per_stratum": floor, "n_required": plan.n_required,
+                               "reference": domain.REF["composites"]})
     before = snapshot(plan)
     plan.status = "approved"
     plan.approved_by = user.id
@@ -423,6 +479,10 @@ def place_points(db: Session, user: CurrentUser, campaign: Campaign) -> dict:
     strata = open_strata(db, user.org_id, campaign.project_id)
     if not strata:
         raise Blocked("Draw the project's zones before placing points.", code="NO_STRATA")
+    # VM0042 Appendix 6: with a multi-stage design, points go only into the selected fields (controls unchanged)
+    selected = design_field_ids(db, campaign)
+    if selected is not None:
+        strata = [s for s in strata if s.role != "project" or selected & {str(f) for f in (s.field_ids or [])}]
     plans = {p.stratum_id: p for p in db.scalars(select(SamplePlan).where(
         SamplePlan.campaign_id == campaign.id, SamplePlan.status == "approved"))}
     missing = [s.code for s in strata if s.id not in plans]
@@ -449,10 +509,17 @@ def place_points(db: Session, user: CurrentUser, campaign: Campaign) -> dict:
                 raise Blocked(f"Zone {s.code} has no fields.", code="NO_FIELDS")
             n = plans[s.id].n_required
             seed = campaign.placement_seed + domain.stratum_seed_offset(s.code)
-            coords = geo.random_points([f.boundary for f in fields], n, seed)
+            if selected is not None and s.role == "project":
+                # every selected field is a sampling unit: spread the zone's n over them (≥ 1 point each)
+                fields = [f for f in fields if str(f.id) in selected]
+                per = -(-n // len(fields))
+                spots = [(f, lat, lon) for i, f in enumerate(fields)
+                         for lat, lon in geo.random_points([f.boundary], per, seed + 7919 * (i + 1))]
+            else:
+                spots = [(next((f for f in fields if geo.contains(f.boundary, lat, lon)), fields[0]), lat, lon)
+                         for lat, lon in geo.random_points([f.boundary for f in fields], n, seed)]
             number = _next_site_number(db, user.org_id, s.code)
-            for lat, lon in coords:
-                fld = next((f for f in fields if geo.contains(f.boundary, lat, lon)), fields[0])
+            for fld, lat, lon in spots:
                 site = Site(org_id=user.org_id, created_by=user.id, project_id=campaign.project_id, field_id=fld.id,
                             stratum_id=s.id, code=domain.site_code(s.code, number), latitude=lat, longitude=lon)
                 db.add(site)
@@ -561,6 +628,8 @@ def bundle(db: Session, user: CurrentUser, campaign: Campaign) -> dict:
             "max_distance_from_site_m": rules.get("max_distance_from_site_m"),
             "required_photos": rules.get("required_photos"),
             "shallow_soil_allowed": rules.get("shallow_soil_allowed"),
+            "stock_depth_cm": rules.get("stock_depth_cm"),
+            "resample_min_depth_increments": rules.get("resample_min_depth_increments"),
         },
         "points": pts,
         "fields": {"type": "FeatureCollection", "features": [
@@ -612,6 +681,39 @@ def _context_snapshot(db: Session, sample_in: SampleIn, site: Site, user: Curren
     }
 
 
+def _check_vm0042_sample(db: Session, campaign: Campaign, body: SampleIn, layers: list[tuple[float, float]]) -> None:
+    """Composite, reporting-depth and re-sampling checks (VM0042 v2.2 §8.2.1.3)."""
+    rules = approved_rules(db, _project_of(db, campaign)) or {}
+    if body.core_depths_reached_cm is not None:
+        if body.cores_composited is None or len(body.core_depths_reached_cm) != body.cores_composited:
+            raise ValidationFailed("Give one depth per core, matching the number of cores composited.",
+                                   code="COMPOSITE_DEPTHS")
+        covered = domain.coverage_to(layers)
+        depths = body.core_depths_reached_cm
+        if min(depths) < covered - domain.DEPTH_TOLERANCE:
+            raise ValidationFailed(
+                f"Every core in a composite must cover the same depth increments (down to {covered:g} cm). "
+                "A shorter core can't be mixed into these bags.", code="COMPOSITE_DEPTHS",
+                details={"core_depths_reached_cm": depths, "layers_to_cm": covered, "reference": domain.REF["esm"]},
+            )
+    min_depth = rules.get("stock_depth_cm")  # "Minimum reporting depth" in the rule pack
+    if (min_depth is not None and body.depth_reached_cm < float(min_depth) - domain.DEPTH_TOLERANCE
+            and body.depth_limit not in ("bedrock", "hardpan")):
+        raise ValidationFailed(
+            f"The core reached {body.depth_reached_cm:g} cm but SOC must be reported to {float(min_depth):g} cm. "
+            "A shallower core is only accepted when bedrock or a hardpan stopped it; record that as the depth limit.",
+            code="REPORTING_DEPTH_SHALLOW",
+            details={"stock_depth_cm": min_depth, "reference": domain.REF["depth"]},
+        )
+    need = rules.get("resample_min_depth_increments")
+    if campaign.kind == "monitoring" and need is not None and len(layers) < int(need):
+        raise ValidationFailed(
+            f"At re-sampling, each core must be split into at least {int(need)} depth increments "
+            f"(for example 0–30 and 30–50 cm). This core has {len(layers)}.", code="RESAMPLE_INCREMENTS",
+            details={"layers": len(layers), "required": int(need), "reference": domain.REF["increments"]},
+        )
+
+
 def submit_sample(db: Session, user: CurrentUser, body: SampleIn) -> tuple[Sample, bool, list]:
     """Record a core from the field app. Returns (sample, replayed, findings)."""
     from app.modules.evidence.models import EvidenceFile
@@ -654,6 +756,7 @@ def submit_sample(db: Session, user: CurrentUser, body: SampleIn) -> tuple[Sampl
             f"The core reached {body.depth_reached_cm:g} cm but the campaign needs {campaign.depth_to_cm:g} cm. "
             "Give the reason (for example: rock).", code="SHALLOW_CORE",
         )
+    _check_vm0042_sample(db, campaign, body, layers)
     labels = [lay.label_qr for lay in body.layers]
     if len(set(labels)) != len(labels):
         raise ValidationFailed("Each bag must have its own label.", code="DUPLICATE_LABEL")
@@ -681,8 +784,11 @@ def submit_sample(db: Session, user: CurrentUser, body: SampleIn) -> tuple[Sampl
         code=code, collected_at=collected_at, latitude=body.latitude, longitude=body.longitude,
         gps_accuracy_m=body.gps_accuracy_m, distance_from_site_m=round(distance, 3),
         depth_reached_cm=body.depth_reached_cm, photo_ids=photo_ids, deviation_reason=body.deviation_reason,
-        device_id=body.device_id, client_ref=body.client_ref,
-        context=_context_snapshot(db, body, site, user, distance),
+        depth_limit=body.depth_limit, probe_diameter_mm=body.probe_diameter_mm,
+        cores_composited=body.cores_composited, device_id=body.device_id, client_ref=body.client_ref,
+        context={**_context_snapshot(db, body, site, user, distance),
+                 **({"core_depths_reached_cm": body.core_depths_reached_cm}
+                    if body.core_depths_reached_cm is not None else {})},
     )
     db.add(sample)
     db.flush()
@@ -742,6 +848,7 @@ def add_custody(db: Session, user: CurrentUser, sample: Sample, body: CustodyIn)
         org_id=user.org_id, created_by=user.id, sample_id=sample.id, event=body.event,
         occurred_at=domain.aware(body.occurred_at), location=body.location, seal_intact=body.seal_intact,
         count_matches=body.count_matches, notes=body.notes,
+        storage_condition=body.storage.condition if body.storage else None,
         corrects_event_id=uuid.UUID(body.corrects_event_id) if body.corrects_event_id else None,
     )
     db.add(ev)
@@ -753,6 +860,7 @@ def custody_out(e: CustodyEvent, nm: dict) -> dict:
     return {
         "id": str(e.id), "event": e.event, "occurred_at": _iso(e.occurred_at), "location": e.location,
         "seal_intact": e.seal_intact, "count_matches": e.count_matches, "notes": e.notes,
+        "storage": {"condition": e.storage_condition} if e.storage_condition else None,
         "corrects_event_id": str(e.corrects_event_id) if e.corrects_event_id else None,
         "recorded_by": nm.get(e.created_by), "recorded_at": _iso(e.created_at),
     }
@@ -777,7 +885,11 @@ def sample_summary(db: Session, s: Sample, *, status: str | None = None, site: S
         "id": str(s.id), "code": s.code, "campaign_id": str(s.campaign_id), "point_id": str(s.point_id),
         "site_id": str(s.site_id), "site_code": site.code if site else None, "collected_at": _iso(s.collected_at),
         "latitude": s.latitude, "longitude": s.longitude, "gps_accuracy_m": s.gps_accuracy_m,
+        "intended_latitude": site.latitude if site else None, "intended_longitude": site.longitude if site else None,
+        "actual_latitude": s.latitude, "actual_longitude": s.longitude,
         "distance_from_site_m": s.distance_from_site_m, "depth_reached_cm": s.depth_reached_cm,
+        "depth_limit": s.depth_limit, "probe_diameter_mm": s.probe_diameter_mm,
+        "cores_composited": s.cores_composited,
         "deviation_reason": s.deviation_reason, "device_id": s.device_id, "client_ref": s.client_ref,
         "photo_ids": list(s.photo_ids or []),
         "status": status or domain.custody_status(_steps(chain_of(db, s))), "data_class": "MEASURED",
@@ -887,3 +999,338 @@ def get_sample(db: Session, user: CurrentUser, sample_id: str) -> Sample:
 
 def get_point(db: Session, user: CurrentUser, point_id: str) -> SamplingPoint:
     return get_owned(db, SamplingPoint, point_id, user, "Point")
+
+
+# ------------------------------------------------------------------ power analysis (Eq. 1-2)
+def power_analysis(s: float, alpha: float, power: float, mdd: float | None, n: int | None) -> dict:
+    if (mdd is None) == (n is None):
+        raise ValidationFailed("Give either the minimum detectable difference (to get n) or n (to get the MDD).",
+                               code="INVALID_PLAN_INPUTS")
+    if mdd is not None:
+        out = domain.n_for_mdd(s, mdd, alpha, power)
+        solved = "n"
+        out["mdd"] = mdd
+    else:
+        out = domain.mdd_for_n(s, n, alpha, power)
+        solved = "mdd"
+        out["mdd"] = round(out["mdd"], 6)
+    return {**out, "s": s, "alpha": alpha, "power": power, "solved_for": solved,
+            "equation": "Eq. 1 MDD = S/sqrt(n) x (t_alpha + t_beta); Eq. 2 n >= (S (t_alpha + t_beta) / MDD)^2",
+            "notes": "t_alpha two-sided, t_beta one-sided, df = n - 1 (Student t).",
+            "reference": domain.REF["power"], "data_class": "CALCULATED"}
+
+
+# ------------------------------------------------------------------ strata & points annex (§8.2.1.2)
+ANNEX_COLUMNS = (
+    "record_type", "stratum_code", "stratum_version", "quantification_unit", "stratum_role", "area_ha",
+    "stratification_factors", "effective_from", "effective_to", "campaign_code", "campaign_kind", "site_code",
+    "field_code", "point_status", "intended_latitude", "intended_longitude", "actual_latitude", "actual_longitude",
+    "distance_from_site_m", "gps_accuracy_m", "sample_code", "collected_at", "depth_reached_cm", "depth_limit",
+    "cores_composited", "probe_diameter_mm", "layers",
+)
+
+
+def _factors_text(criteria: dict | None) -> str:
+    return "; ".join(f"{k}={v}" for k, v in sorted((criteria or {}).items()))
+
+
+def sampling_annex(db: Session, user: CurrentUser, project: Project) -> dict:
+    strata = list(db.scalars(scoped(Stratum, user).where(Stratum.project_id == project.id)
+                             .order_by(Stratum.code, Stratum.version)))
+    by_id = {s.id: s for s in strata}
+    campaigns = list(db.scalars(scoped(Campaign, user).where(Campaign.project_id == project.id)
+                                .order_by(Campaign.planned_start, Campaign.code)))
+    points: list[dict] = []
+    for c in campaigns:
+        rows = db.execute(
+            select(SamplingPoint, Site, Field).join(Site, Site.id == SamplingPoint.site_id)
+            .join(Field, Field.id == Site.field_id)
+            .where(SamplingPoint.org_id == user.org_id, SamplingPoint.campaign_id == c.id)
+            .order_by(SamplingPoint.sequence)).all()
+        samples = {s.point_id: s for s in db.scalars(select(Sample).where(Sample.campaign_id == c.id))}
+        layers: dict[uuid.UUID, list[SoilLayer]] = defaultdict(list)
+        if samples:
+            for lay in db.scalars(select(SoilLayer).where(SoilLayer.sample_id.in_([s.id for s in samples.values()]))
+                                  .order_by(SoilLayer.depth_from_cm)):
+                layers[lay.sample_id].append(lay)
+        for pt, site, fld in rows:
+            st = by_id.get(site.stratum_id)
+            smp = samples.get(pt.id)
+            points.append({
+                "stratum_code": st.code if st else None, "quantification_unit": (st.quantification_unit or st.code)
+                if st else None, "campaign_code": c.code, "campaign_kind": c.kind, "site_code": site.code,
+                "field_code": fld.code, "point_status": pt.status,
+                "intended_latitude": site.latitude, "intended_longitude": site.longitude,
+                "actual_latitude": smp.latitude if smp else None, "actual_longitude": smp.longitude if smp else None,
+                "distance_from_site_m": smp.distance_from_site_m if smp else None,
+                "gps_accuracy_m": smp.gps_accuracy_m if smp else None,
+                "sample_code": smp.code if smp else None, "collected_at": _iso(smp.collected_at) if smp else None,
+                "depth_reached_cm": smp.depth_reached_cm if smp else None,
+                "depth_limit": smp.depth_limit if smp else None,
+                "cores_composited": smp.cores_composited if smp else None,
+                "probe_diameter_mm": smp.probe_diameter_mm if smp else None,
+                "layers": [{"code": lay.code, "depth_from_cm": lay.depth_from_cm, "depth_to_cm": lay.depth_to_cm}
+                           for lay in layers.get(smp.id, [])] if smp else [],
+            })
+    return {
+        "project": {"id": str(project.id), "code": project.code, "name": project.name},
+        "generated_at": utcnow().isoformat(),
+        "reference": domain.REF["annex"],
+        "strata": [{
+            "code": s.code, "version": s.version, "quantification_unit": s.quantification_unit or s.code,
+            "role": s.role, "control_for_code": s.control_for_code, "area_ha": s.area_ha,
+            "stratification_factors": s.criteria or {}, "effective_from": _iso(s.effective_from),
+            "effective_to": _iso(s.effective_to), "is_current": s.effective_to is None,
+        } for s in strata],
+        "points": points,
+    }
+
+
+def sampling_annex_csv(annex: dict) -> str:
+    import csv
+    import io
+
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=list(ANNEX_COLUMNS), extrasaction="ignore", lineterminator="\n")
+    w.writeheader()
+    strata = {s["code"]: s for s in annex["strata"] if s["is_current"]}
+    for s in annex["strata"]:
+        w.writerow({"record_type": "stratum", "stratum_code": s["code"], "stratum_version": s["version"],
+                    "quantification_unit": s["quantification_unit"], "stratum_role": s["role"],
+                    "area_ha": s["area_ha"], "stratification_factors": _factors_text(s["stratification_factors"]),
+                    "effective_from": s["effective_from"], "effective_to": s["effective_to"] or ""})
+    for p in annex["points"]:
+        st = strata.get(p["stratum_code"] or "")
+        w.writerow({**{k: ("" if v is None else v) for k, v in p.items() if k != "layers"},
+                    "record_type": "point", "stratum_version": st["version"] if st else "",
+                    "area_ha": st["area_ha"] if st else "",
+                    "stratification_factors": _factors_text(st["stratification_factors"]) if st else "",
+                    "layers": " | ".join(f"{x['code']}:{x['depth_from_cm']:g}-{x['depth_to_cm']:g}"
+                                         for x in p["layers"])})
+    return buf.getvalue()
+
+
+# ------------------------------------------------------------------ multi-stage design (VM0042 Appendix 6)
+def design_population(db: Session, org_id: uuid.UUID, project_id: uuid.UUID, stage1_unit: str) -> dict:
+    """The sampled population: every field in the project's current *project* zones, grouped into stage-1 units.
+
+    A field belongs to exactly one current zone, so its within-field stratum area A_fhj is the field area."""
+    from app.modules.farmers.models import Farmer
+    from app.modules.land.models import Farm
+
+    strata = [s for s in open_strata(db, org_id, project_id) if s.role == "project"]
+    stratum_of = {str(fid): s.code for s in strata for fid in (s.field_ids or [])}
+    ids = [uuid.UUID(f) for f in stratum_of]
+    fields = list(db.scalars(select(Field).where(Field.org_id == org_id, Field.id.in_(ids)))) if ids else []
+    farm_ids = {x.farm_id for x in fields}
+    farms = {f.id: f for f in db.scalars(select(Farm).where(Farm.id.in_(farm_ids)))} if farm_ids else {}
+    farmer_ids = {x.farmer_id for x in farms.values()}
+    farmers = {f.id: f for f in db.scalars(select(Farmer).where(Farmer.id.in_(farmer_ids)))} if farmer_ids else {}
+    units: dict[str, dict] = {}
+    for f in sorted(fields, key=lambda x: x.code):
+        entry = {"label": f.code, "area_ha": float(f.area_ha), "strata": {stratum_of[str(f.id)]: float(f.area_ha)}}
+        farm = farms.get(f.farm_id)
+        if stage1_unit == "field":
+            key, label = str(f.id), f.code
+        elif stage1_unit == "farm":
+            key, label = str(f.farm_id), (farm.name if farm else str(f.farm_id))
+        else:
+            farmer = farmers.get(farm.farmer_id) if farm else None
+            key = str(farm.farmer_id) if farm else str(f.farm_id)
+            label = farmer.code if farmer else key
+        u = units.setdefault(key, {"label": label, "area_ha": 0.0, "fields": {}})
+        u["fields"][str(f.id)] = entry
+        u["area_ha"] += entry["area_ha"]
+    return {"area_ha": float(sum(u["area_ha"] for u in units.values())), "units": units}
+
+
+def population_out(db: Session, user: CurrentUser, project: Project, stage1_unit: str) -> dict:
+    """The population with PPS / equal probabilities, to help fill in a design (read-only)."""
+    pop = design_population(db, user.org_id, project.id, stage1_unit)
+    total, n = pop["area_ha"], len(pop["units"])
+    out = []
+    for key, u in pop["units"].items():
+        k_f = len(u["fields"])
+        out.append({
+            "unit_id": key, "label": u["label"], "area_ha": u["area_ha"], "field_count": k_f,
+            "pps_probability": u["area_ha"] / total if total else None, "equal_probability": 1 / n if n else None,
+            "fields": [{"field_id": fk, "label": f["label"], "area_ha": f["area_ha"], "strata": f["strata"],
+                        "pps_probability": f["area_ha"] / u["area_ha"] if u["area_ha"] else None,
+                        "equal_probability": 1 / k_f} for fk, f in u["fields"].items()],
+        })
+    return {"project_id": str(project.id), "stage1_unit": stage1_unit, "area_ha": total, "unit_count": n,
+            "units": out, "reference": "VM0042 v2.2 Appendix 6 (pp. 159–165)"}
+
+
+def find_design(db: Session, org_id: uuid.UUID, campaign_id: uuid.UUID) -> SamplingDesign | None:
+    return db.scalar(select(SamplingDesign).where(SamplingDesign.org_id == org_id,
+                                                  SamplingDesign.campaign_id == campaign_id))
+
+
+def get_design(db: Session, user: CurrentUser, campaign: Campaign) -> SamplingDesign:
+    d = find_design(db, user.org_id, campaign.id)
+    if d is None:
+        raise NotFound("This campaign has no multi-stage sampling design; it uses stratified random sampling.")
+    return d
+
+
+def _design_units(db: Session, d: SamplingDesign) -> list[SamplingDesignUnit]:
+    return list(db.scalars(select(SamplingDesignUnit).where(SamplingDesignUnit.design_id == d.id)
+                           .order_by(SamplingDesignUnit.stage, SamplingDesignUnit.label, SamplingDesignUnit.ref)))
+
+
+def _design_snapshot(db: Session, d: SamplingDesign) -> dict:
+    return {"design": snapshot(d), "units": [snapshot(u) for u in _design_units(db, d)]}
+
+
+def _ensure_design_editable(campaign: Campaign) -> None:
+    if campaign.status != "planned":
+        raise IllegalTransition(
+            f"The sampling design of campaign {campaign.code} is locked because the campaign is {campaign.status}. "
+            "A design can only change while the campaign is planned.", code="DESIGN_LOCKED",
+            details={"campaign_status": campaign.status})
+
+
+def save_design(db: Session, user: CurrentUser, campaign: Campaign, body: SamplingDesignIn, *,
+                existing: SamplingDesign | None = None) -> SamplingDesign:
+    """Create (``existing`` None) or replace a campaign's multi-stage design after validating it against the
+    population; probabilities are computed here, never trusted from the client."""
+    _ensure_design_editable(campaign)
+    if existing is None and find_design(db, user.org_id, campaign.id) is not None:
+        raise Conflict("This campaign already has a sampling design; update it instead.", code="DESIGN_EXISTS")
+    population = design_population(db, user.org_id, campaign.project_id, body.stage1_unit)
+    norm, problems = domain.validate_multistage_design(body.model_dump(), population)
+    if problems:
+        raise ValidationFailed("The sampling design is not valid: " + problems[0], code="INVALID_SAMPLING_DESIGN",
+                               details={"problems": problems, "reference": "VM0042 v2.2 Appendix 6"})
+    before = None
+    if existing is None:
+        d = SamplingDesign(org_id=user.org_id, created_by=user.id, project_id=campaign.project_id,
+                           campaign_id=campaign.id, version=1)
+        db.add(d)
+    else:
+        d = existing
+        before = _design_snapshot(db, d)
+        for u in _design_units(db, d):
+            db.delete(u)
+        d.version += 1
+    d.stage1_unit, d.stage1_selection = norm["stage1_unit"], norm["stage1_selection"]
+    d.stage2_selection = norm["stage2_selection"]
+    d.population_area_ha, d.population_unit_count = norm["population_area_ha"], norm["population_unit_count"]
+    d.justification = body.justification
+    db.flush()
+    for u in norm["units"]:
+        db.add(SamplingDesignUnit(
+            org_id=user.org_id, created_by=user.id, design_id=d.id, stage=1, ref=u["ref"], parent_ref=None,
+            label=u["label"], draws=u["draws"], area_ha=u["area_ha"], population_count=u["population_count"],
+            selection_probability=u["selection_probability"], inclusion_probability=u["inclusion_probability"],
+            stratum_areas=u["stratum_areas"]))
+        for f in u["fields"]:
+            db.add(SamplingDesignUnit(
+                org_id=user.org_id, created_by=user.id, design_id=d.id, stage=2, ref=f["ref"], parent_ref=u["ref"],
+                label=f["label"], draws=f["draws"], area_ha=f["area_ha"], population_count=None,
+                selection_probability=f["selection_probability"], inclusion_probability=f["inclusion_probability"],
+                stratum_areas=f["stratum_areas"]))
+    db.flush()
+    audit(db, user, "sampling_design.create" if existing is None else "sampling_design.update", d, before=before)
+    return d
+
+
+def delete_design(db: Session, user: CurrentUser, campaign: Campaign) -> None:
+    d = get_design(db, user, campaign)
+    _ensure_design_editable(campaign)
+    before = _design_snapshot(db, d)
+    audit(db, user, "sampling_design.delete", d, before=before, reason="Reverted to stratified random sampling")
+    for u in _design_units(db, d):
+        db.delete(u)
+    db.delete(d)
+    db.flush()
+
+
+def design_out(db: Session, d: SamplingDesign) -> dict:
+    campaign = db.get(Campaign, d.campaign_id)
+    units = _design_units(db, d)
+    stage2: dict[str, list[SamplingDesignUnit]] = defaultdict(list)
+    for u in units:
+        if u.stage == 2:
+            stage2[u.parent_ref or ""].append(u)
+
+    def row(u: SamplingDesignUnit) -> dict:
+        return {"id": u.ref, "label": u.label, "draws": u.draws, "area_ha": u.area_ha,
+                "selection_probability": u.selection_probability, "inclusion_probability": u.inclusion_probability,
+                "stratum_areas_ha": dict(u.stratum_areas or {})}
+
+    first = [u for u in units if u.stage == 1]
+    nm = names(db, d.org_id, {d.created_by})
+    locked = campaign is None or campaign.status != "planned"
+    return {
+        "id": str(d.id), "project_id": str(d.project_id), "campaign_id": str(d.campaign_id),
+        "campaign_status": campaign.status if campaign else None, "status": "locked" if locked else "draft",
+        "locked": locked, "version": d.version,
+        "stage1_unit": d.stage1_unit, "stage1_selection": d.stage1_selection, "stage2_selection": d.stage2_selection,
+        "population": {"area_ha": d.population_area_ha, "unit_count": d.population_unit_count},
+        "stage1_draws": sum(u.draws for u in first), "stage1_selected": len(first),
+        "units": [{**row(u), "population_field_count": u.population_count,
+                   "fields": [row(f) for f in stage2.get(u.ref, [])]} for u in first],
+        "estimator": {"qa2": "VM0042 v2.2 Appendix 6, Eq. A6.8–A6.9", "qa1": "VM0042 v2.2 Appendix 6, Eq. A6.1–A6.7",
+                      "reference": "VM0042 v2.2 Appendix 6, pp. 159–165"},
+        "justification": d.justification, "created_by": nm.get(d.created_by),
+        "created_at": _iso(d.created_at), "updated_at": _iso(d.updated_at),
+    }
+
+
+def _design_signature(db: Session, d: SamplingDesign) -> tuple:
+    return (d.stage1_unit, d.stage1_selection, d.stage2_selection, tuple(sorted(
+        (u.stage, u.ref, u.parent_ref or "", u.draws, round(u.selection_probability, 9))
+        for u in _design_units(db, d))))
+
+
+def multistage_input_for_run(db: Session, org_id: uuid.UUID, project_id: uuid.UUID, base: Campaign,
+                             mon: Campaign) -> tuple[Any, dict | None]:
+    """The engine's ``MultiStageDesign`` for a run (the monitoring campaign's design, else the baseline's), or
+    ``(None, None)`` for the default stratified design. When both campaigns have one they must agree — Appendix 6
+    (A6.9) compares the same selected fields at the start and the end of the period."""
+    from app.modules.calculation import multistage as ms
+
+    designs = {d.campaign_id: d for d in db.scalars(select(SamplingDesign).where(
+        SamplingDesign.org_id == org_id, SamplingDesign.campaign_id.in_([base.id, mon.id])))}
+    if not designs:
+        return None, None
+    if len(designs) == 2 and _design_signature(db, designs[base.id]) != _design_signature(db, designs[mon.id]):
+        raise Blocked("The baseline and monitoring campaigns declare different multi-stage designs. Appendix 6 "
+                      "compares the same selected units at both times; make the designs match.",
+                      code="DESIGN_MISMATCH", details={"baseline": base.code, "monitoring": mon.code})
+    d = designs.get(mon.id) or designs[base.id]
+    units = _design_units(db, d)
+    first = [u for u in units if u.stage == 1]
+
+    def mk_field(u: SamplingDesignUnit) -> Any:
+        return ms.DesignField(key=u.ref, area_ha=u.area_ha, stratum_areas_ha=dict(u.stratum_areas or {}),
+                              probability=u.selection_probability, draws=u.draws, label=u.label)
+
+    if d.stage1_unit == "field":
+        eng_units = (ms.DesignUnit(key="project", area_ha=d.population_area_ha, field_selection=d.stage1_selection,
+                                   fields=tuple(mk_field(u) for u in first), label="project"),)
+        unit_selection = "census"
+    else:
+        eng_units = tuple(
+            ms.DesignUnit(key=u.ref, area_ha=u.area_ha, field_selection=d.stage2_selection or "census",
+                          fields=tuple(mk_field(f) for f in units if f.stage == 2 and f.parent_ref == u.ref),
+                          probability=u.selection_probability, draws=u.draws, label=u.label)
+            for u in first)
+        unit_selection = d.stage1_selection
+    sites = db.scalars(select(Site).where(Site.org_id == org_id, Site.project_id == project_id))
+    design = ms.MultiStageDesign(
+        stage1_unit=d.stage1_unit, unit_selection=unit_selection, population_area_ha=d.population_area_ha,
+        units=eng_units, site_fields={str(s.id): str(s.field_id) for s in sites}, design_id=str(d.id),
+        version=d.version)
+    return design, design_out(db, d)
+
+
+def design_field_ids(db: Session, campaign: Campaign) -> set[str] | None:
+    """Fields a campaign's multi-stage design selected (None when the campaign has no design)."""
+    d = find_design(db, campaign.org_id, campaign.id)
+    if d is None:
+        return None
+    level = 1 if d.stage1_unit == "field" else 2
+    return {u.ref for u in _design_units(db, d) if u.stage == level}

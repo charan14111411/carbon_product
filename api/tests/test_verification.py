@@ -54,7 +54,8 @@ def test_end_to_end_package_and_verifier_portal(client, built, as_role):
     manager = as_role("programme_admin")
     rid = _approved(client, as_role, built)
     with dbmod.session_factory()() as s:
-        assert s.query(Claim).filter_by(run_id=uuid.UUID(rid)).count() == len(built.field_ids)
+        # SOC, fossil-fuel CO2 and fertiliser N2O are each claimed for both fields
+        assert s.query(Claim).filter_by(run_id=uuid.UUID(rid)).count() == 3 * len(built.field_ids)
 
     # a second approval for the same period is refused
     analyst = as_role("mrv_analyst")
@@ -73,8 +74,27 @@ def test_end_to_end_package_and_verifier_portal(client, built, as_role):
     assert vsvc.package_sha256(j1) == p1["sha256"] == j1["metadata"]["sha256"]
     for section in ("project", "methodology", "fields", "enrolments", "land_use", "practices", "strata",
                     "campaigns", "sites", "samples", "custody_events", "lab_results", "terms", "calculation",
-                    "document_index"):
+                    "document_index", "activity_data", "emissions", "leakage", "uncertainty", "vintages",
+                    "equations", "annex", "supporting_data", "conformance"):
         assert j1[section], section
+    assert j1["metadata"]["schema"] == "vcarbon.verification-package/2"
+    # §8.2.1.2 annex: strata with areas and points with intended vs actual coordinates
+    assert {s["code"] for s in j1["annex"]["strata"]} == {"Z1", "C1"}
+    pt = j1["annex"]["points"][0]
+    assert pt["intended_latitude"] is not None and pt["actual_latitude"] is not None
+    assert len(j1["annex"]["points"]) == 20  # (5 project + 5 control sites) x 2 campaigns
+    # activity data with Box 1 tiers; attested tiers carry an attestation
+    assert j1["activity_data"]["records"] and j1["activity_data"]["box1_tiers"]
+    assert j1["activity_data"]["attestations"]["needed"] == j1["activity_data"]["attestations"]["present"] > 0
+    assert [v["year"] for v in j1["vintages"]] == [2021, 2022, 2023, 2024]
+    assert j1["uncertainty"]["soc"]["unc_pct"] > 0
+    conf = {c["requirement"]: c for c in j1["conformance"]}
+    assert all(c["status"] in ("met", "not_met", "n/a") for c in j1["conformance"])
+    esm = next(c for c in j1["conformance"] if c["requirement"].startswith("SOC stock changes on an equivalent"))
+    assert esm["status"] == "met"
+    assert conf["At re-sampling, at least two depth increments"]["status"] == "met"
+    assert conf["GWP CH4 28 and N2O 265 (IPCC AR5)"]["status"] == "met"
+    assert j1["supporting_data"]["note"].startswith("Supporting data informs")
     assert isinstance(j1["qa_findings"], list)  # clean data: nothing found, but the section is always present
     assert j1["calculation"]["headline"]["net_credits_t_co2e"] > 0
     assert all(r["source_document"] for r in j1["methodology"]["rules"])
@@ -92,6 +112,11 @@ def test_end_to_end_package_and_verifier_portal(client, built, as_role):
     assert check["intact"] is True and check["recomputed_sha256"] == p1["sha256"]
     pdf = client.get(f"/api/evidence/{p1['pdf_file_id']}/content", headers=manager)
     assert pdf.content.startswith(b"%PDF")
+    annex = client.get(f"/api/packages/{p1['id']}/annex.csv", headers=manager)
+    assert annex.status_code == 200 and annex.headers["content-type"].startswith("text/csv")
+    lines = annex.text.strip().splitlines()
+    assert lines[0].startswith("record_type,stratum,quantification_unit")
+    assert sum(1 for x in lines if x.startswith("stratum,")) == 2 and sum(1 for x in lines if x.startswith("point,")) == 20
     with dbmod.session_factory()() as s:
         assert s.query(DomainEvent).filter_by(event="package.issued").count() == 2
 
@@ -204,6 +229,7 @@ def test_cross_org_packages_are_not_found(client, built, as_role):
     other = login(client, make_user(make_org("Rival"), "programme_admin"))
     assert client.get(f"/api/packages/{p['id']}", headers=other).status_code == 404
     assert client.get(f"/api/packages/{p['id']}/verify", headers=other).status_code == 404
+    assert client.get(f"/api/packages/{p['id']}/annex.csv", headers=other).status_code == 404
     assert client.post(f"/api/calculations/{p['run_id']}/package", headers=other).status_code == 404
     assert client.post(f"/api/packages/{p['id']}/verifier-access", headers=other, json={
         "verifier_name": "X Y", "verifier_email": "x@y.example", "days": 5}).status_code == 404

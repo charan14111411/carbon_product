@@ -112,7 +112,10 @@ export class Shell {
   userOpen = signal(false);
 
   groups = computed(() =>
-    NAV.map(g => ({ ...g, items: g.items.filter(i => this.auth.can(...i.perms)) })).filter(g => g.items.length),
+    NAV.map(g => ({
+      ...g,
+      items: g.items.filter(i => (this.auth.profile()?.role === 'client_viewer' ? !!i.client : !i.client || i.path !== '/app/portfolio' || this.auth.can('users.manage', 'programmes.manage')) && this.auth.can(...i.perms)),
+    })).filter(g => g.items.length),
   );
 
   private url = toSignal(this.router.events.pipe(filter(e => e instanceof NavigationEnd), map(() => this.router.url)), {

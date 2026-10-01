@@ -45,10 +45,13 @@ import { CSV_TEMPLATE, ImportReport, analyteLabel } from './types';
           <pre class="tpl">{{ template }}</pre>
           <dl class="kv small">
             <dt><code>bag_code</code></dt><dd>The code or label printed on the bag.</dd>
-            <dt><code>analyte</code></dt><dd><code>soc_pct</code>, <code>bulk_density_g_cm3</code>, <code>coarse_fraction</code>, <code>ph</code> or <code>texture_clay_pct</code>.</dd>
-            <dt><code>unit</code></dt><dd><code>%</code>, <code>g/cm3</code>, <code>fraction</code> or <code>pH</code>, matching the analyte.</dd>
+            <dt><code>analyte</code></dt><dd><code>soc_pct</code>, <code>bulk_density_g_cm3</code>, <code>coarse_fraction</code>, <code>fine_soil_mass_g</code>, <code>ph</code>, <code>texture_clay_pct</code>, <code>texture_sand_pct</code> or <code>inorganic_c_pct</code>.</dd>
+            <dt><code>unit</code></dt><dd><code>%</code>, <code>g/cm3</code>, <code>fraction</code>, <code>g</code> or <code>pH</code>, matching the analyte.</dd>
             <dt><code>analysed_on</code></dt><dd>Date as YYYY-MM-DD. Not before collection, not in the future.</dd>
             <dt><code>uncertainty</code></dt><dd>Optional, same unit as the value.</dd>
+            <dt><code>detection_limit</code></dt><dd>Optional. The lab's limit of detection, same unit; lower values are flagged as below detection.</dd>
+            <dt><code>method_justification</code></dt><dd>Required for <code>walkley_black</code> or <code>loss_on_ignition</code> (at least 20 characters). Not recommended by VM0042 §8.2.1.4; only where no other method is available.</dd>
+            <dt><code>purpose</code></dt><dd><code>primary</code> (default) or <code>spectroscopy_check</code> for a dry-combustion SOC re-run of a spectroscopy bag.</dd>
           </dl>
         </div>
       </section>

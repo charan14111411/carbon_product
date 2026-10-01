@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import CurrentUser
 from app.core.db import utcnow
-from app.core.errors import Blocked, IllegalTransition
+from app.core.errors import AppError, Blocked, IllegalTransition
 from app.core.tenancy import audit, snapshot
 from app.modules.qa import engine
 from app.modules.qa.models import SEVERITIES, QAFinding
@@ -41,8 +41,11 @@ def project_rules(db: Session, project) -> dict[str, Any]:
 
 # ------------------------------------------------------------------ context building
 def _contexts(db: Session, project, *, sample_ids: set[uuid.UUID] | None = None) -> list[Any]:
+    from app.core import geo
     from app.modules.lab.models import LabResult
+    from app.modules.lab.service import UNITS, _canonical_unit
     from app.modules.land.models import Field
+    from app.modules.sampling import domain
     from app.modules.sampling.models import (
         Campaign, CustodyEvent, Sample, SamplePlan, SamplingPoint, Site, SoilLayer, Stratum,
     )
@@ -51,12 +54,19 @@ def _contexts(db: Session, project, *, sample_ids: set[uuid.UUID] | None = None)
     org = project.org_id
     campaigns = {c.id: c for c in db.scalars(select(Campaign).where(Campaign.org_id == org,
                                                                     Campaign.project_id == project.id))}
+    strata = {st.id: st for st in db.scalars(select(Stratum).where(Stratum.org_id == org,
+                                                                   Stratum.project_id == project.id))}
+    ctxs: list[Any] = []
+    if sample_ids is None:
+        for st in strata.values():
+            if st.effective_to is None:
+                ctxs.append(engine.StratumCtx(entity_id=str(st.id), code=st.code, criteria=dict(st.criteria or {}),
+                                              rules=rules))
     if not campaigns:
-        return []
-    sq = select(Sample).where(Sample.org_id == org, Sample.campaign_id.in_(list(campaigns)))
-    if sample_ids is not None:
-        sq = sq.where(Sample.id.in_(list(sample_ids)))
-    samples = list(db.scalars(sq))
+        return ctxs
+    all_samples = list(db.scalars(select(Sample).where(Sample.org_id == org,
+                                                       Sample.campaign_id.in_(list(campaigns)))))
+    samples = [s for s in all_samples if sample_ids is None or s.id in sample_ids]
     sample_by_id = {s.id: s for s in samples}
     sites = {s.id: s for s in db.scalars(select(Site).where(Site.org_id == org, Site.project_id == project.id))}
     field_ids = {s.field_id for s in sites.values()}
@@ -70,19 +80,42 @@ def _contexts(db: Session, project, *, sample_ids: set[uuid.UUID] | None = None)
             layers_by_sample[layer.sample_id].append(layer)
         for ev in db.scalars(select(CustodyEvent).where(CustodyEvent.sample_id.in_(ids))
                              .order_by(CustodyEvent.created_at)):
-            custody_by_sample[ev.sample_id].append(ev.event)
+            custody_by_sample[ev.sample_id].append(ev)
         layer_ids = [lay.id for ls in layers_by_sample.values() for lay in ls]
         if layer_ids:
             for r in db.scalars(select(LabResult).where(LabResult.org_id == org, LabResult.layer_id.in_(layer_ids))):
                 results_by_layer[r.layer_id].append(r)
 
-    ctxs: list[Any] = []
+    # campaign-wide facts used by per-sample rules (computed over every sample, also during a sync)
+    last_collected: dict[uuid.UUID, Any] = {}
+    by_campaign: dict[uuid.UUID, list] = defaultdict(list)
+    baseline_at_site: dict[uuid.UUID, Any] = {}
+    for s in all_samples:
+        cur = last_collected.get(s.campaign_id)
+        if cur is None or domain.aware(s.collected_at) > domain.aware(cur):
+            last_collected[s.campaign_id] = s.collected_at
+        by_campaign[s.campaign_id].append(s)
+        if campaigns[s.campaign_id].kind == "baseline":
+            prev = baseline_at_site.get(s.site_id)
+            if prev is None or domain.aware(s.collected_at) < domain.aware(prev):
+                baseline_at_site[s.site_id] = s.collected_at
+
+    def near(s) -> list[str]:
+        return sorted(o.code for o in by_campaign[s.campaign_id] if o.id != s.id and geo.distance_m(
+            s.latitude, s.longitude, o.latitude, o.longitude) <= engine.SAME_POINT_M)
+
     for s in samples:
         site = sites.get(s.site_id)
         fld = fields.get(site.field_id) if site else None
         camp = campaigns[s.campaign_id]
         layers = layers_by_sample.get(s.id, [])
-        has_results = any(results_by_layer.get(lay.id) for lay in layers)
+        results = [r for lay in layers for r in results_by_layer.get(lay.id, [])]
+        chain = custody_by_sample.get(s.id, [])
+        times: dict[str, Any] = {}
+        for ev in chain:
+            if ev.event != domain.CORRECTION and ev.event not in times:
+                times[ev.event] = ev.occurred_at
+        live = [r for r in results if r.status in ("pending", "accepted")]
         ctxs.append(engine.SampleCtx(
             entity_id=str(s.id), code=s.code, latitude=s.latitude, longitude=s.longitude,
             gps_accuracy_m=s.gps_accuracy_m, distance_from_site_m=s.distance_from_site_m,
@@ -90,29 +123,49 @@ def _contexts(db: Session, project, *, sample_ids: set[uuid.UUID] | None = None)
             deviation_reason=s.deviation_reason, field_boundary=fld.boundary if fld else None,
             field_code=fld.code if fld else None, campaign_depth_from_cm=camp.depth_from_cm,
             campaign_depth_to_cm=camp.depth_to_cm, layers=[(lay.depth_from_cm, lay.depth_to_cm) for lay in layers],
-            custody_events=custody_by_sample.get(s.id, []), has_lab_results=has_results, rules=rules,
+            custody_events=[ev.event for ev in chain], has_lab_results=bool(results), rules=rules,
+            campaign_kind=camp.kind, campaign_code=camp.code, collected_at=s.collected_at, custody_times=times,
+            storage_conditions=[ev.storage_condition for ev in chain if ev.storage_condition],
+            campaign_last_collected_at=last_collected.get(s.campaign_id),
+            first_analysed_on=min((r.analysed_on for r in live), default=None), depth_limit=s.depth_limit,
+            baseline_collected_at=baseline_at_site.get(s.site_id) if camp.kind == "monitoring" else None,
+            near_duplicates=near(s),
         ))
     if sample_ids is not None:
         return ctxs  # a sync only re-checks the samples just received
+
+    def unit_ok(r) -> bool:
+        if r.analyte not in UNITS:
+            return False
+        try:
+            _canonical_unit(r.analyte, r.unit or "")
+        except AppError:
+            return False
+        return True
 
     for s in samples:
         collected_on = s.collected_at.date()
         for lay in layers_by_sample.get(s.id, []):
             results = results_by_layer.get(lay.id, [])
+            primary = [r for r in results if (r.purpose or "primary") == "primary"]
             ctxs.append(engine.LayerCtx(
                 entity_id=str(lay.id), code=lay.code,
-                accepted_analytes={r.analyte for r in results if r.status == "accepted"}, rules=rules,
+                accepted_analytes={r.analyte for r in primary if r.status == "accepted"}, rules=rules,
+                has_fine_soil_mass=any(r.analyte == "fine_soil_mass_g" and r.status in ("pending", "accepted")
+                                       for r in primary),
+                probe_diameter_mm=s.probe_diameter_mm, cores_composited=s.cores_composited,
             ))
             for r in results:
                 ctxs.append(engine.ResultCtx(
                     entity_id=str(r.id), layer_code=lay.code, analyte=r.analyte, value=r.value, method=r.method,
                     status=r.status, analysed_on=r.analysed_on, collected_on=collected_on,
-                    has_certificate=r.certificate_id is not None, rules=rules,
+                    has_certificate=r.certificate_id is not None, rules=rules, unit=r.unit, unit_ok=unit_ok(r),
+                    canonical_unit=UNITS[r.analyte][0] if r.analyte in UNITS else None,
+                    method_justification=r.method_justification, detection_limit=r.detection_limit,
+                    below_detection_limit=bool(r.below_detection_limit), purpose=r.purpose or "primary",
                 ))
 
     # zones: collected samples per stratum code per campaign
-    strata = {st.id: st for st in db.scalars(select(Stratum).where(Stratum.org_id == org,
-                                                                   Stratum.project_id == project.id))}
     collected: Counter = Counter()
     for s in samples:
         site = sites.get(s.site_id)
@@ -145,7 +198,71 @@ def _contexts(db: Session, project, *, sample_ids: set[uuid.UUID] | None = None)
                 campaign_status=camp.status, point_status=pt.status,
                 baseline_collected=pt.site_id in base_collected, rules=rules,
             ))
+
+    ctxs.extend(_campaign_and_lab_contexts(db, project, campaigns, samples, layers_by_sample, results_by_layer,
+                                           rules))
     return ctxs
+
+
+def _campaign_and_lab_contexts(db: Session, project, campaigns: dict, samples: list, layers_by_sample: dict,
+                               results_by_layer: dict, rules: dict) -> list[Any]:
+    from app.modules.lab.models import Lab, LabBatch, LabChange
+    from app.modules.lab.service import spectroscopy_pairs
+    from app.modules.sampling import domain
+    from app.modules.sampling import service as sampling
+
+    org = project.org_id
+    labs_by_campaign: dict[uuid.UUID, set] = defaultdict(set)
+    for b in db.scalars(select(LabBatch).where(LabBatch.org_id == org, LabBatch.campaign_id.in_(list(campaigns)))):
+        labs_by_campaign[b.campaign_id].add(b.lab_id)
+    for s in samples:
+        for lay in layers_by_sample.get(s.id, []):
+            for r in results_by_layer.get(lay.id, []):
+                if r.status in ("pending", "accepted"):
+                    labs_by_campaign[s.campaign_id].add(r.lab_id)
+    all_lab_ids = {lab_id for ids in labs_by_campaign.values() for lab_id in ids}
+    labs = {lab.id: lab for lab in db.scalars(select(Lab).where(Lab.id.in_(list(all_lab_ids))))} \
+        if all_lab_ids else {}
+    code = {lid: (labs[lid].code if lid in labs else str(lid)) for lid in all_lab_ids}
+
+    ordered = sorted(campaigns.values(), key=lambda c: (c.planned_start, c.created_at))
+    first = next((c for c in ordered if labs_by_campaign.get(c.id)), None)
+    reference = set(labs_by_campaign.get(first.id, set())) if first else set()
+    allowed = set(reference)
+    changes = list(db.scalars(select(LabChange).where(LabChange.org_id == org, LabChange.project_id == project.id)))
+    grew = True
+    while grew:
+        grew = False
+        for lc in changes:
+            if lc.from_lab_id in allowed and lc.to_lab_id not in allowed:
+                allowed.add(lc.to_lab_id)
+                grew = True
+
+    out: list[Any] = []
+    window = sampling.season_window(rules)
+    for c in ordered:
+        used = labs_by_campaign.get(c.id, set())
+        ref = None
+        gap = None
+        if c.kind == "monitoring":
+            revisited = campaigns.get(c.revisits_campaign_id) if c.revisits_campaign_id else None
+            ref = sampling.season_reference(db, org, project.id, revisited)
+            if ref is not None:
+                gap = domain.day_of_year_gap(ref.planned_start, c.planned_start)
+        spectro = spectroscopy_pairs(db, org, c.id)
+        out.append(engine.CampaignCtx(
+            entity_id=str(c.id), code=c.code, kind=c.kind, rules=rules,
+            season_reference=ref.code if ref else None, season_gap_days=gap, season_window_days=window,
+            season_override_reason=c.season_override_reason,
+            reference_labs=sorted(code[x] for x in reference), labs_used=sorted(code[x] for x in used),
+            unjustified_labs=sorted(code[x] for x in used - allowed) if first is not None and c is not first else [],
+            n_spectroscopy=spectro["n_spectroscopy"], n_spectroscopy_checked=len(spectro["pairs"]),
+        ))
+    for lab in labs.values():
+        out.append(engine.LabCtx(entity_id=str(lab.id), code=lab.code, iso17025=lab.iso17025,
+                                 proficiency_program=lab.proficiency_program,
+                                 has_error_report=lab.analytical_error_report_id is not None, rules=rules))
+    return out
 
 
 # ------------------------------------------------------------------ upsert

@@ -2,16 +2,16 @@ from __future__ import annotations
 
 from datetime import date
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.core.auth import CurrentUser, require
 from app.core.db import get_db
 from app.core.permissions import P
 from app.core.tenancy import get_owned
-from app.modules.supporting import service
+from app.modules.supporting import service, site_context
 from app.modules.supporting.models import PARAMETERS, Device
-from app.modules.supporting.schemas import DeviceIn, DeviceOut, DevicePatch, SyncIn
+from app.modules.supporting.schemas import DeviceIn, DeviceOut, DevicePatch, SoilApplyIn, SyncIn, TerrainRefreshIn
 
 router = APIRouter(tags=["Supporting data"])
 _read = require(P.READ)
@@ -82,3 +82,54 @@ def field_summary(field_id: str, user: CurrentUser = Depends(_read), db: Session
 def project_coverage(project_id: str, on: date | None = None, user: CurrentUser = Depends(_read),
                      db: Session = Depends(get_db)):
     return service.coverage(db, user, service.get_project(db, user, project_id), on)
+
+
+# ------------------------------------------------------------------ derived features
+@router.get("/fields/{field_id}/derived-features")
+def derived_features(field_id: str, start: date, end: date, window: str = "monthly",
+                     wet_threshold_pct: float | None = Query(default=None, gt=0, le=100),
+                     user: CurrentUser = Depends(_read), db: Session = Depends(get_db)):
+    return service.derived_features(db, service.get_field(db, user, field_id), start, end, window, wet_threshold_pct)
+
+
+# ------------------------------------------------------------------ terrain
+@router.post("/fields/{field_id}/terrain/refresh", status_code=201)
+def terrain_refresh(field_id: str, body: TerrainRefreshIn | None = None, user: CurrentUser = Depends(_write),
+                    db: Session = Depends(get_db)):
+    return site_context.refresh_terrain(db, user, service.get_field(db, user, field_id), bool(body and body.force))
+
+
+@router.post("/projects/{project_id}/terrain/refresh", status_code=201)
+def project_terrain_refresh(project_id: str, body: TerrainRefreshIn | None = None,
+                            user: CurrentUser = Depends(_write), db: Session = Depends(get_db)):
+    return site_context.refresh_project_terrain(db, user, service.get_project(db, user, project_id),
+                                                bool(body and body.force))
+
+
+@router.get("/fields/{field_id}/terrain")
+def terrain_history(field_id: str, user: CurrentUser = Depends(_read), db: Session = Depends(get_db)):
+    return site_context.terrain_history(db, user, service.get_field(db, user, field_id))
+
+
+# ------------------------------------------------------------------ soil-map suggestions
+@router.post("/fields/{field_id}/soil-properties/refresh", status_code=201)
+def soil_refresh(field_id: str, user: CurrentUser = Depends(_write), db: Session = Depends(get_db)):
+    return site_context.refresh_soil_properties(db, user, service.get_field(db, user, field_id))
+
+
+@router.get("/fields/{field_id}/soil-properties")
+def soil_suggestions(field_id: str, user: CurrentUser = Depends(_read), db: Session = Depends(get_db)):
+    return site_context.list_soil_suggestions(db, user, service.get_field(db, user, field_id))
+
+
+@router.post("/fields/{field_id}/soil-properties/apply")
+def soil_apply(field_id: str, body: SoilApplyIn, user: CurrentUser = Depends(require(P.MANAGE_LAND)),
+               db: Session = Depends(get_db)):
+    return site_context.apply_soil_suggestion(db, user, service.get_field(db, user, field_id), body.suggestion_id,
+                                              list(body.columns), body.overwrite, body.note)
+
+
+# ------------------------------------------------------------------ weather station check
+@router.get("/projects/{project_id}/weather-station-check")
+def weather_station_check(project_id: str, user: CurrentUser = Depends(_read), db: Session = Depends(get_db)):
+    return site_context.weather_station_check(db, user, service.get_project(db, user, project_id))

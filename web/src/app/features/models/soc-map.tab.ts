@@ -9,12 +9,13 @@ import { KIT } from '../../ui/kit';
 import { MapView } from '../../ui/map-view';
 import { FieldLite, Remote, esc, fieldsFC } from '../supporting/shared';
 import { CLAY_RAMP, GREEN_RAMP, ModelVersion, SocCell, SocMap, featureLabel, ramp } from './types';
+import { WallChip } from './informing-wall';
 
 type Layer = 'prediction' | 'uncertainty' | 'priority';
 
 @Component({
   selector: 'vc-soc-map-tab',
-  imports: [...KIT, FormsModule, MapView, NumPipe, DayPipe],
+  imports: [...KIT, FormsModule, MapView, NumPipe, DayPipe, WallChip],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     @if (state.loading()) {
@@ -95,7 +96,7 @@ type Layer = 'prediction' | 'uncertainty' | 'priority';
               </tbody>
             </table>
           </div>
-          <div class="card-foot left"><vc-dc cls="MODELLED" /><span class="small muted">{{ m.summary.note }}</span></div>
+          <div class="card-foot left"><vc-dc cls="MODELLED" /><span class="small muted">{{ m.summary.note }}</span><span class="spacer"></span><vc-wall-chip [data]="m" /></div>
         </section>
       }
     }

@@ -34,7 +34,8 @@ export interface FieldLite { id: string; code: string; name: string }
 interface ServerBundle {
   campaign: { id: string; code: string; name: string; kind: string; design: string; depth_from_cm: number; depth_to_cm: number };
   project: { id: string; code: string; name: string };
-  rules: { approved: boolean; gps_accuracy_max_m: number | null; max_distance_from_site_m: number | null; required_photos: number | null; shallow_soil_allowed: boolean | null };
+  rules: { approved: boolean; gps_accuracy_max_m: number | null; max_distance_from_site_m: number | null; required_photos: number | null; shallow_soil_allowed: boolean | null;
+    stock_depth_cm?: number | null; resample_min_depth_increments?: number | null };
   points: { id: string; site_code: string; latitude: number; longitude: number; field_code: string; field_id: string; status: string; sequence: number }[];
   fields: GeoJSON.FeatureCollection;
 }
@@ -96,6 +97,8 @@ export class FieldData {
       project: b.project,
       rulesApproved: b.rules.approved,
       shallowSoilAllowed: b.rules.shallow_soil_allowed,
+      stockDepthCm: b.rules.stock_depth_cm ?? null,
+      resampleMinIncrements: b.rules.resample_min_depth_increments ?? null,
     };
     await this.store.saveBundle(bundle);
     await this.refreshBundles();

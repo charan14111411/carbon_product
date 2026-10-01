@@ -14,12 +14,18 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import CurrentUser, ensure_not_author
 from app.core.db import utcnow
-from app.core.errors import Blocked, IllegalTransition, RuleMissing, ValidationFailed
+from app.core.errors import Blocked, IllegalTransition, NotFound, RuleMissing, ValidationFailed
 from app.core.tenancy import audit, get_owned, scoped, snapshot
 from app.modules.catalogue.models import PracticeType
 from app.modules.intelligence import domain
-from app.modules.intelligence.models import ModelVersion, PracticeDetection, SatelliteIndex, SocMap
-from app.modules.intelligence.providers import CLOUD_LIMIT_PCT, FieldRef, get_satellite_provider
+from app.modules.intelligence import features as fstore
+from app.modules.intelligence.models import (
+    DriftReport, FeatureSet, FieldFeature, ModelVersion, PracticeDetection, SatelliteIndex, SocMap,
+)
+from app.modules.intelligence.domain import wall
+from app.modules.intelligence.providers import (
+    CLOUD_LIMIT_PCT, INDEX_CLASSES, INDICES, LAI_METHOD, FieldRef, SatObs, get_satellite_provider, lai_from_ndvi,
+)
 from app.modules.lab.models import LabResult
 from app.modules.land.models import Field
 from app.modules.methodology import ruleset
@@ -67,6 +73,9 @@ def refresh_satellite(db: Session, user: CurrentUser, fld: Field, start: date, e
         raise ValidationFailed("Satellite data can't be requested for future dates.", code="FUTURE_WINDOW")
     provider = get_satellite_provider()
     obs = provider.indices(FieldRef(str(fld.id), fld.centroid_lat, fld.centroid_lon, fld.crop_code), start, end)
+    if not any(o.index_name == "lai" for o in obs):  # LAI is DERIVED from each pass's NDVI
+        obs = obs + [SatObs("lai", o.observed_on, lai_from_ndvi(o.value), o.cloud_pct, o.source)
+                     for o in obs if o.index_name == "ndvi"]
     existing = set(db.execute(
         select(SatelliteIndex.index_name, SatelliteIndex.observed_on, SatelliteIndex.source).where(
             SatelliteIndex.field_id == fld.id, SatelliteIndex.observed_on >= start, SatelliteIndex.observed_on <= end)
@@ -105,8 +114,8 @@ def clear_series(db: Session, field_id: uuid.UUID, index: str, start: date | Non
 
 def satellite_series(db: Session, fld: Field, index: str, start: date | None, end: date | None,
                      include_cloudy: bool) -> dict[str, Any]:
-    if index not in ("ndvi", "ndmi", "lst"):
-        raise ValidationFailed("Index must be ndvi, ndmi or lst.", code="UNKNOWN_INDEX")
+    if index not in INDICES:
+        raise ValidationFailed("Index must be one of: " + ", ".join(INDICES) + ".", code="UNKNOWN_INDEX")
     q = select(SatelliteIndex).where(SatelliteIndex.field_id == fld.id, SatelliteIndex.index_name == index)
     if start:
         q = q.where(SatelliteIndex.observed_on >= start)
@@ -122,8 +131,11 @@ def satellite_series(db: Session, fld: Field, index: str, start: date | None, en
             continue
         points.append({"date": r.observed_on.isoformat(), "value": r.value, "cloud_pct": r.cloud_pct,
                        "source": r.source, "excluded": cloudy})
-    return {"field_id": str(fld.id), "index": index, "data_class": "OBSERVED",
-            "cloud_limit_pct": CLOUD_LIMIT_PCT, "cloudy_excluded": excluded, "points": points}
+    out = {"field_id": str(fld.id), "index": index, **wall(INDEX_CLASSES[index]),
+           "cloud_limit_pct": CLOUD_LIMIT_PCT, "cloudy_excluded": excluded, "points": points}
+    if index == "lai":
+        out["method"] = LAI_METHOD
+    return out
 
 
 def satellite_alerts(db: Session, user: CurrentUser, project: Project) -> dict[str, Any]:
@@ -149,7 +161,7 @@ def satellite_alerts(db: Session, user: CurrentUser, project: Project) -> dict[s
                            "Check for harvest, damage or land-use change.",
             })
     alerts.sort(key=lambda a: -a["drop_pct"])
-    return {"project_id": str(project.id), "threshold_pct": ALERT_DROP * 100, "alerts": alerts}
+    return {"project_id": str(project.id), "threshold_pct": ALERT_DROP * 100, "alerts": alerts, **wall("DERIVED")}
 
 
 # ------------------------------------------------------------------ practice detection
@@ -220,7 +232,7 @@ def detection_out(d: PracticeDetection) -> dict[str, Any]:
             "practice_record_id": str(d.practice_record_id) if d.practice_record_id else None,
             "practice_code": d.practice_code, "season": d.season, "detected": d.detected, "confidence": d.confidence,
             "outcome": d.outcome, "evidence": d.evidence, "created_at": d.created_at.isoformat(),
-            "data_class": "DERIVED",
+            **wall("DERIVED"),
             "needs_review": d.outcome != "confirmed"}
 
 
@@ -326,27 +338,49 @@ def _aware(dt: datetime) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
-def train_soc(db: Session, user: CurrentUser, *, name: str, features: list[str], project_id: str | None,
-              ridge_lambda: float) -> ModelVersion:
-    unknown = sorted(set(features) - set(domain.SOC_FEATURES))
-    if unknown or not features:
-        raise ValidationFailed("Choose features from: " + ", ".join(domain.SOC_FEATURES) + ".",
-                               code="UNKNOWN_FEATURE", details={"unknown": unknown})
-    features = list(dict.fromkeys(features))
+def train_soc(db: Session, user: CurrentUser, *, name: str, features: list[str] | None, project_id: str | None,
+              ridge_lambda: float, feature_set_id: str | None = None) -> ModelVersion:
+    """Train a ridge SOC model. Features come either from the built-in list (``features``) or from a
+    feature-set version (``feature_set_id``), computed point-in-time as of each sample's collection date."""
+    fs: FeatureSet | None = None
+    specs: list[fstore.Spec] = []
+    if feature_set_id:
+        fs = get_owned(db, FeatureSet, feature_set_id, user, "Feature set")
+        if fs.status != "active":
+            raise Blocked("This feature set is retired. Choose an active version.", code="FEATURE_SET_RETIRED")
+        specs = fstore.parse_definition(fs.definition)
+        if features and list(features) != [sp.column for sp in specs]:
+            raise ValidationFailed("Give either a feature set or a list of features, not both.",
+                                   code="FEATURES_AND_FEATURE_SET")
+        features = [sp.column for sp in specs]
+    else:
+        features = list(features or [])
+        unknown = sorted(set(features) - set(domain.SOC_FEATURES))
+        if unknown or not features:
+            raise ValidationFailed("Choose features from: " + ", ".join(domain.SOC_FEATURES) + ".",
+                                   code="UNKNOWN_FEATURE", details={"unknown": unknown})
+        features = list(dict.fromkeys(features))
     project = get_owned(db, Project, project_id, user, "Project") if project_id else None
     rows = _training_rows(db, user.org_id, project.id if project else None)
     field_ids = list({r["field"].id for r in rows})
     practices = latest_active_practices(db, user.org_id, field_ids)
     X, y, groups, used, excluded = [], [], [], [], []
+    fingerprints: dict[str, str] = {}
     clay_sources: dict[str, int] = defaultdict(int)
     for r in rows:
         as_of = _aware(r["sample"].collected_at).date()
-        vals, src = build_features(db, r["field"], as_of, features, clay_lab=r["clay"], practices=practices)
+        if fs is not None:
+            vec = fstore.compute_vector(db, r["field"], as_of, specs, practices=practices)
+            vals = vec.values
+        else:
+            vals, _ = build_features(db, r["field"], as_of, features, clay_lab=r["clay"], practices=practices)
         missing = [f for f, v in vals.items() if v is None]
         if missing:
             excluded.append({"sample_code": r["sample"].code, "missing_features": missing})
             continue
-        if "clay_pct" in features:
+        if fs is not None:
+            fingerprints[r["sample"].code] = vec.fingerprint
+        elif "clay_pct" in features:
             clay_sources["lab" if r["clay"] is not None else "soilgrids"] += 1
         X.append([float(vals[f]) for f in features])
         y.append(float(r["soc"]))
@@ -366,24 +400,47 @@ def train_soc(db: Session, user: CurrentUser, *, name: str, features: list[str],
     cv = domain.grouped_cv(Xa, ya, groups, ridge_lambda)
     model = domain.fit_ridge(Xa, ya, ridge_lambda)
     params = domain.portable_params(model, features, Xa, cv)
+    fs_info = None
+    if fs is not None:
+        fs_info = {"id": str(fs.id), "name": fs.name, "version": fs.version, "definition": fs.definition,
+                   "definition_sha256": fstore.sha256(fs.definition)}
+        params.update({"feature_set_id": str(fs.id), "feature_set_name": fs.name, "feature_set_version": fs.version})
     n_prev = db.scalar(select(func.count()).select_from(ModelVersion).where(
         ModelVersion.org_id == user.org_id, ModelVersion.name == name)) or 0
+    summary = {
+        "target": "soc_pct of the top layer of each sample (accepted lab results, MEASURED)",
+        "project_id": str(project.id) if project else None, "rows": len(y), "farms": n_farms,
+        "fields": len({g for g in groups}), "samples": used, "excluded": excluded,
+        "clay_sources": dict(clay_sources), "target_range": [float(ya.min()), float(ya.max())],
+    }
+    if fs_info:
+        summary.update({"feature_set": fs_info, "feature_fingerprints": fingerprints,
+                        "point_in_time": "features as of each sample's collection date"})
     mv = ModelVersion(
         org_id=user.org_id, created_by=user.id, name=name, version=str(n_prev + 1), kind="soc_prediction",
-        algorithm="ridge_regression_closed_form", features=features,
-        training_summary={
-            "target": "soc_pct of the top layer of each sample (accepted lab results, MEASURED)",
-            "project_id": str(project.id) if project else None, "rows": len(y), "farms": n_farms,
-            "fields": len({g for g in groups}), "samples": used, "excluded": excluded,
-            "clay_sources": dict(clay_sources), "target_range": [float(ya.min()), float(ya.max())],
-        },
+        algorithm="ridge_regression_closed_form", features=features, training_summary=summary,
         metrics={k: cv[k] for k in ("rmse", "mae", "bias", "r2", "coverage_90", "k", "folds")},
         validation="grouped_kfold_by_farm", status="candidate", params=params,
-        notes=f"Ridge λ={ridge_lambda}; validation holds out whole farms (K={cv['k']}).",
+        notes=f"Ridge λ={ridge_lambda}; validation holds out whole farms (K={cv['k']})."
+              + (f" Features from feature set {fs.name} v{fs.version}." if fs else ""),
     )
     db.add(mv)
     audit(db, user, "model.train", mv)
     return mv
+
+
+def model_vector(db: Session, mv: ModelVersion, fld: Field, as_of: date, practices: list[PracticeRecord] | None,
+                 clay_lab: float | None = None) -> tuple[dict[str, float | None], dict[str, Any]]:
+    """Feature values for a model: via its feature set when it has one, else the built-in builder."""
+    fs_id = (mv.params or {}).get("feature_set_id")
+    if fs_id:
+        fs = db.get(FeatureSet, uuid.UUID(fs_id))
+        if fs is None:
+            raise RuleMissing("The model's feature set no longer exists.", details={"feature_set_id": fs_id})
+        vec = fstore.compute_vector(db, fld, as_of, fstore.parse_definition(fs.definition), practices=practices)
+        return vec.values, {"feature_set": f"{fs.name} v{fs.version}", "fingerprint": vec.fingerprint,
+                            "data_classes": vec.data_classes}
+    return build_features(db, fld, as_of, list(mv.features), clay_lab=clay_lab, practices=practices)
 
 
 def approve_model(db: Session, user: CurrentUser, model_id: str) -> ModelVersion:
@@ -409,8 +466,11 @@ def model_out(m: ModelVersion, full: bool = False) -> dict[str, Any]:
         "created_by": str(m.created_by) if m.created_by else None,
         "approved_by": str(m.approved_by) if m.approved_by else None,
         "approved_at": m.approved_at.isoformat() if m.approved_at else None, "created_at": m.created_at.isoformat(),
-        "notes": m.notes, "data_class": "MODELLED",
+        "notes": m.notes, **wall("MODELLED"),
         "training_rows": (m.training_summary or {}).get("rows"),
+        "feature_set_id": (m.params or {}).get("feature_set_id"),
+        "review_required": review_required(m),
+        "latest_drift": (m.metrics or {}).get("latest_drift"),
     }
     if full:
         out.update({"training_summary": m.training_summary, "params": m.params})
@@ -430,7 +490,7 @@ def soc_map(db: Session, user: CurrentUser, project: Project, model_id: str, top
     practices = latest_active_practices(db, user.org_id, [f.id for f in fields])
     cells = []
     for f in fields:
-        vals, src = build_features(db, f, as_of, list(mv.features), practices=practices)
+        vals, src = model_vector(db, mv, f, as_of, practices)
         missing = [k for k, v in vals.items() if v is None]
         cell: dict[str, Any] = {"field_id": str(f.id), "field_code": f.code, "farm_id": str(f.farm_id),
                                 "area_ha": f.area_ha, "features": vals, "feature_sources": src,
@@ -467,7 +527,8 @@ def soc_map(db: Session, user: CurrentUser, project: Project, model_id: str, top
                  "out_of_domain": sum(1 for c in cells if not c["in_domain"]),
                  "mean_predicted_soc_pct": round(sum(predicted) / len(predicted), 4) if predicted else None,
                  "sample_next": [c["field_code"] for c in ranked[:top_n]], "data_class": "MODELLED",
-                 "note": "Model predictions guide sampling; they are not measurements and are not credited."},
+                 "note": "Model predictions guide sampling; they are not measurements and are not credited.",
+                 "model_review_required": review_required(mv)},
     )
     db.add(sm)
     audit(db, user, "soc_map.create", sm)
@@ -476,8 +537,8 @@ def soc_map(db: Session, user: CurrentUser, project: Project, model_id: str, top
 
 def soc_map_out(sm: SocMap) -> dict[str, Any]:
     return {"id": str(sm.id), "project_id": str(sm.project_id), "model_id": str(sm.model_id),
-            "generated_on": sm.generated_on.isoformat(), "data_class": "MODELLED", "summary": sm.summary,
-            "cells": sm.cells}
+            "generated_on": sm.generated_on.isoformat(), **wall("MODELLED"), "summary": sm.summary,
+            "cells": [{**c, **wall(c.get("data_class", "MODELLED"))} for c in sm.cells]}
 
 
 def latest_soc_map(db: Session, user: CurrentUser, project: Project) -> SocMap | None:
@@ -530,7 +591,7 @@ def sampling_optimiser(db: Session, user: CurrentUser, project: Project, budget:
         s["fields"] += 1
         s["suggested_samples"] += r["suggested_samples"]
         s["extra_samples"] += r["suggested_samples"] - 1
-    return {"project_id": str(project.id), "budget": budget, "soc_map_id": str(sm.id), "data_class": "MODELLED",
+    return {"project_id": str(project.id), "budget": budget, "soc_map_id": str(sm.id), **wall("MODELLED"),
             "recommendations": chosen, "per_stratum": sorted(per_stratum.values(), key=lambda s: s["stratum"]),
             "total_suggested_samples": sum(r["suggested_samples"] for r in chosen)}
 
@@ -595,7 +656,257 @@ def emissions_estimate(db: Session, user: CurrentUser, project: Project, start: 
     return {
         "project_id": str(project.id), "start": start.isoformat(), "end": end.isoformat(),
         "factors": {k: {"value": v, "source": rules.sources.get("emission_factors", "")} for k, v in factor_values.items()},
-        "by_scenario": by_scenario, "records_missing_n": missing_n, "data_class": "MODELLED",
+        "by_scenario": by_scenario, "records_missing_n": missing_n,
+        **wall("MODELLED", "An estimate only: project emissions are credited solely through project terms entered "
+                           "and approved under the rule pack."),
         "note": "An estimate to inform project term entries. It does not create or change any term.",
         "rule_pack": rules.snapshot()["methodology"],
     }
+
+
+# ------------------------------------------------------------------ feature store
+def feature_set_out(fs: FeatureSet) -> dict[str, Any]:
+    return {"id": str(fs.id), "name": fs.name, "version": fs.version, "definition": fs.definition,
+            "columns": fs.columns, "status": fs.status, "description": fs.description,
+            "definition_sha256": fstore.sha256(fs.definition), "created_at": fs.created_at.isoformat(),
+            "created_by": str(fs.created_by) if fs.created_by else None,
+            "credit_eligible": False}  # model inputs inform sampling only; credits come from lab results
+
+
+def feature_catalogue() -> list[dict[str, Any]]:
+    return [{"feature": k, "group": g, "window_required": w, "unit": u, "data_class": dc, "description": d}
+            for k, (g, w, u, dc, d) in fstore.CATALOGUE.items()]
+
+
+def create_feature_set(db: Session, user: CurrentUser, name: str, definition: dict[str, Any],
+                       description: str = "") -> FeatureSet:
+    specs = fstore.parse_definition(definition)
+    n_prev = db.scalar(select(func.max(FeatureSet.version)).where(
+        FeatureSet.org_id == user.org_id, FeatureSet.name == name)) or 0
+    items = []
+    for sp in specs:
+        item: dict[str, Any] = {"feature": sp.feature, "column": sp.column, **sp.options}
+        if sp.window_days:
+            item["window_days"] = sp.window_days
+        items.append(item)
+    fs = FeatureSet(org_id=user.org_id, created_by=user.id, name=name, version=n_prev + 1,
+                    definition={"features": items}, columns=[sp.column for sp in specs], status="active",
+                    description=description)
+    db.add(fs)
+    audit(db, user, "feature_set.create", fs)
+    return fs
+
+
+def retire_feature_set(db: Session, user: CurrentUser, fs_id: str) -> FeatureSet:
+    fs = get_owned(db, FeatureSet, fs_id, user, "Feature set")
+    if fs.status != "active":
+        raise IllegalTransition("This feature set is already retired.")
+    before = snapshot(fs)
+    fs.status = "retired"
+    audit(db, user, "feature_set.retire", fs, before=before)
+    return fs
+
+
+def find_feature_set(db: Session, user: CurrentUser, ref: str, version: int | None = None) -> FeatureSet:
+    try:
+        uuid.UUID(ref)
+    except ValueError:
+        q = scoped(FeatureSet, user).where(FeatureSet.name == ref)
+        q = q.where(FeatureSet.version == version) if version else q.where(FeatureSet.status == "active")
+        fs = db.scalars(q.order_by(FeatureSet.version.desc())).first()
+        if fs is None:
+            raise NotFound("Feature set not found.")
+        return fs
+    return get_owned(db, FeatureSet, ref, user, "Feature set")
+
+
+def field_feature_out(r: FieldFeature, fs: FeatureSet) -> dict[str, Any]:
+    return {"id": str(r.id), "field_id": str(r.field_id), "feature_set_id": str(fs.id),
+            "feature_set": f"{fs.name} v{fs.version}", "as_of_date": r.as_of_date.isoformat(), "values": r.values,
+            "data_classes": r.data_classes, "details": r.details, "input_fingerprint": r.input_fingerprint,
+            "created_at": r.created_at.isoformat(), **wall("DERIVED"),
+            "point_in_time": f"computed only from data observed on or before {r.as_of_date.isoformat()}"}
+
+
+def materialize(db: Session, user: CurrentUser, fs_id: str, project_id: str, as_of: date) -> dict[str, Any]:
+    fs = get_owned(db, FeatureSet, fs_id, user, "Feature set")
+    if fs.status != "active":
+        raise Blocked("This feature set is retired. Choose an active version.", code="FEATURE_SET_RETIRED")
+    if as_of > today():
+        raise ValidationFailed("Features can't be materialised for a future date.", code="FUTURE_AS_OF")
+    project = get_owned(db, Project, project_id, user, "Project")
+    specs = fstore.parse_definition(fs.definition)
+    fields = supporting.enrolled_fields(db, user.org_id, project.id)
+    practices = latest_active_practices(db, user.org_id, [f.id for f in fields])
+    written, unchanged, items = 0, 0, []
+    for f in fields:
+        vec = fstore.compute_vector(db, f, as_of, specs, practices=practices)
+        prev = db.scalars(select(FieldFeature).where(
+            FieldFeature.field_id == f.id, FieldFeature.feature_set_id == fs.id, FieldFeature.as_of_date == as_of)
+            .order_by(FieldFeature.created_at.desc())).first()
+        if prev is not None and prev.input_fingerprint == vec.fingerprint:
+            unchanged += 1
+            items.append({**field_feature_out(prev, fs), "status": "unchanged"})
+            continue
+        row = FieldFeature(org_id=user.org_id, created_by=user.id, field_id=f.id, feature_set_id=fs.id,
+                           project_id=project.id, as_of_date=as_of, values=vec.values, details=vec.details,
+                           data_classes=vec.data_classes, input_fingerprint=vec.fingerprint)
+        db.add(row)
+        db.flush()
+        written += 1
+        items.append({**field_feature_out(row, fs), "status": "new" if prev is None else "recomputed"})
+    audit(db, user, "feature_set.materialize", fs,
+          reason=f"project {project.code} as of {as_of.isoformat()}: {written} written, {unchanged} unchanged")
+    return {"feature_set_id": str(fs.id), "feature_set": f"{fs.name} v{fs.version}", "project_id": str(project.id),
+            "as_of_date": as_of.isoformat(), "fields": len(fields), "written": written, "unchanged": unchanged,
+            "items": items, **wall("DERIVED")}
+
+
+def field_features(db: Session, user: CurrentUser, fld: Field, ref: str, version: int | None,
+                   as_of: date | None) -> dict[str, Any]:
+    fs = find_feature_set(db, user, ref, version)
+    q = scoped(FieldFeature, user).where(FieldFeature.field_id == fld.id, FieldFeature.feature_set_id == fs.id)
+    if as_of:
+        q = q.where(FieldFeature.as_of_date <= as_of)
+    row = db.scalars(q.order_by(FieldFeature.as_of_date.desc(), FieldFeature.created_at.desc())).first()
+    if row is None:
+        when = f" on or before {as_of.isoformat()}" if as_of else ""
+        raise NotFound(f"No features have been materialised for this field and feature set{when}.")
+    return field_feature_out(row, fs)
+
+
+# ------------------------------------------------------------------ model drift
+DRIFT_DEFAULTS = {
+    "bias_sd": 1.0, "coverage_min": 0.80, "rmse_ratio": 1.5,                # drift
+    "warn_bias_sd": 0.5, "warn_coverage_min": 0.85, "warn_rmse_ratio": 1.2,  # warning
+    "min_rows": 3,
+}
+
+
+def drift_out(r: DriftReport) -> dict[str, Any]:
+    return {"id": str(r.id), "model_id": str(r.model_id), "status": r.status, "n_new": r.n_new,
+            "metrics": r.metrics, "baseline": r.baseline, "thresholds": r.thresholds, "reasons": r.reasons,
+            "rows": r.rows, "action": r.action, "created_at": r.created_at.isoformat(),
+            "created_by": str(r.created_by) if r.created_by else None, **wall("MODELLED")}
+
+
+def drift_check(db: Session, user: CurrentUser, model_id: str,
+                overrides: dict[str, float] | None = None) -> DriftReport:
+    """Evaluate a model on accepted lab results that were NOT in its training set.
+
+    drift   if |bias| > bias_sd × residual SD, or interval coverage < coverage_min, or
+            RMSE > rmse_ratio × validation RMSE;
+    warning if any of the softer warn_* thresholds is crossed; ok otherwise;
+    insufficient when fewer than min_rows new results have complete features.
+    An approved model with drift is flagged review_required; it is never retired automatically."""
+    mv = get_owned(db, ModelVersion, model_id, user, "Model")
+    if mv.kind != "soc_prediction" or not (mv.params or {}).get("features"):
+        raise ValidationFailed("Drift checks apply to trained SOC prediction models only.")
+    th = {**DRIFT_DEFAULTS, **{k: v for k, v in (overrides or {}).items() if v is not None}}
+    ts = mv.training_summary or {}
+    trained = set(ts.get("samples", []))
+    proj_id = ts.get("project_id")
+    rows = _training_rows(db, user.org_id, uuid.UUID(proj_id) if proj_id else None)
+    new = [r for r in rows if r["sample"].code not in trained]
+    practices = latest_active_practices(db, user.org_id, list({r["field"].id for r in new}))
+    out_rows, skipped = [], []
+    for r in new:
+        as_of = _aware(r["sample"].collected_at).date()
+        vals, _ = model_vector(db, mv, r["field"], as_of, practices, clay_lab=r["clay"])
+        missing = [k for k, v in vals.items() if v is None]
+        if missing:
+            skipped.append({"sample_code": r["sample"].code, "missing_features": missing})
+            continue
+        p = domain.predict_interval(mv.params, {k: float(v) for k, v in vals.items()})
+        y = float(r["soc"])
+        out_rows.append({"sample_code": r["sample"].code, "field_id": str(r["field"].id), "lab_soc_pct": y,
+                         "predicted_soc_pct": p["predicted_soc_pct"], "lower": p["lower"], "upper": p["upper"],
+                         "residual": round(y - p["predicted_soc_pct"], 6), "in_domain": p["in_domain"],
+                         "covered": p["lower"] <= y <= p["upper"]})
+    base = {"validation_rmse": mv.metrics.get("rmse"), "validation_bias": mv.metrics.get("bias"),
+            "validation_coverage_90": mv.metrics.get("coverage_90"), "residual_sd": mv.params.get("residual_sd")}
+    reasons: list[str] = []
+    n = len(out_rows)
+    metrics: dict[str, Any] = {"skipped": skipped}
+    if n < th["min_rows"]:
+        status = "insufficient"
+        reasons.append(f"Only {n} new accepted lab result(s) not used in training; at least {int(th['min_rows'])} "
+                       "are needed for a drift check.")
+    else:
+        y = np.array([x["lab_soc_pct"] for x in out_rows])
+        pred = np.array([x["predicted_soc_pct"] for x in out_rows])
+        m = domain.metrics(y, pred)
+        cov = float(np.mean([x["covered"] for x in out_rows]))
+        sd = float(base["residual_sd"] or 0.0)
+        vr = float(base["validation_rmse"] or 0.0)
+        rmse_ratio = m["rmse"] / vr if vr > 0 else float("inf")
+        bias_sd = abs(m["bias"]) / sd if sd > 0 else float("inf")
+        metrics.update({"rmse": m["rmse"], "mae": m["mae"], "bias": m["bias"], "coverage": round(cov, 4),
+                        "out_of_domain": sum(1 for x in out_rows if not x["in_domain"]),
+                        "rmse_ratio": round(rmse_ratio, 4), "bias_in_residual_sd": round(bias_sd, 4)})
+        status = "ok"
+        checks = (
+            (bias_sd > th["bias_sd"], bias_sd > th["warn_bias_sd"],
+             f"|bias| {abs(m['bias']):.3f} is {bias_sd:.2f} residual SDs (drift above {th['bias_sd']})"),
+            (cov < th["coverage_min"], cov < th["warn_coverage_min"],
+             f"interval coverage {cov:.0%} (drift below {th['coverage_min']:.0%})"),
+            (rmse_ratio > th["rmse_ratio"], rmse_ratio > th["warn_rmse_ratio"],
+             f"RMSE {m['rmse']:.3f} is {rmse_ratio:.2f}x the validation RMSE (drift above {th['rmse_ratio']}x)"),
+        )
+        for is_drift, is_warn, text in checks:
+            if is_drift:
+                status = "drift"
+                reasons.append(text)
+            elif is_warn:
+                if status == "ok":
+                    status = "warning"
+                reasons.append("warning: " + text)
+    action = "review_required" if status == "drift" and mv.status == "approved" else "none"
+    rep = DriftReport(org_id=user.org_id, created_by=user.id, model_id=mv.id, status=status, n_new=n,
+                      metrics=metrics, baseline=base, thresholds=th, reasons=reasons, rows=out_rows, action=action)
+    db.add(rep)
+    audit(db, user, "model.drift_check", rep)
+    before = snapshot(mv)
+    new_metrics = {**(mv.metrics or {}), "latest_drift": {
+        "report_id": str(rep.id), "status": status, "checked_at": utcnow().isoformat(), "n_new": n}}
+    if action == "review_required":  # sticky: only a reviewer's decision clears it, never a later check
+        new_metrics["review"] = {"required": True, "report_id": str(rep.id), "flagged_at": utcnow().isoformat()}
+    mv.metrics = new_metrics
+    if action == "review_required":
+        mv.notes = (mv.notes + " " if mv.notes else "") + (
+            f"Review required: drift found on {today().isoformat()} against {n} new lab results "
+            f"(report {rep.id}). The model stays approved until a reviewer decides.")
+        audit(db, user, "model.review_required", mv, before=before, reason="; ".join(reasons))
+    else:
+        audit(db, user, "model.drift_status", mv, before=before)
+    return rep
+
+
+def drift_reports(db: Session, user: CurrentUser, model_id: str) -> list[dict[str, Any]]:
+    mv = get_owned(db, ModelVersion, model_id, user, "Model")
+    rows = db.scalars(scoped(DriftReport, user).where(DriftReport.model_id == mv.id)
+                      .order_by(DriftReport.created_at.desc())).all()
+    return [drift_out(r) for r in rows]
+
+
+def review_required(m: ModelVersion) -> bool:
+    return bool(((m.metrics or {}).get("review") or {}).get("required"))
+
+
+def resolve_drift_review(db: Session, user: CurrentUser, model_id: str, decision: str, note: str) -> ModelVersion:
+    """A reviewer (neither the model's author nor whoever ran the flagging drift check) keeps or retires an approved model flagged by a drift check."""
+    mv = get_owned(db, ModelVersion, model_id, user, "Model")
+    if not review_required(mv):
+        raise IllegalTransition("This model has no open drift review.")
+    flagged_by = db.scalar(select(DriftReport.created_by).where(
+        DriftReport.org_id == mv.org_id, DriftReport.model_id == mv.id, DriftReport.action == "review_required")
+        .order_by(DriftReport.created_at.desc()).limit(1))
+    ensure_not_author(user.id, mv.created_by, flagged_by, what="a drift review of a model")
+    before = snapshot(mv)
+    review = {**mv.metrics["review"], "required": False, "decision": decision, "note": note,
+              "resolved_by": str(user.id), "resolved_at": utcnow().isoformat()}
+    mv.metrics = {**mv.metrics, "review": review}
+    if decision == "retire":
+        mv.status = "retired"
+    audit(db, user, "model.drift_review", mv, before=before, reason=f"{decision}: {note}")
+    return mv
