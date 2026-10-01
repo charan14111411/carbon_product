@@ -1,7 +1,0 @@
-{
-  "version": 3,
-  "sources": ["src/app/ui/kit.ts"],
-  "sourcesContent": ["\n    :host{display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:20px;overflow-x:auto}\n    button{position:relative;height:40px;padding:0 14px;border:0;background:none;font:inherit;font-weight:500;color:var(--text-2);cursor:pointer;white-space:nowrap}\n    button:hover{color:var(--text)}\n    button.on{color:var(--forest-700)}\n    button.on::after{content:'';position:absolute;left:10px;right:10px;bottom:-1px;height:2px;border-radius:2px;background:var(--forest-600)}\n    .c{display:inline-grid;place-items:center;min-width:20px;height:18px;padding:0 6px;margin-left:4px;border-radius:9px;background:var(--sand-200);font-size:11px;color:var(--stone-600)}\n  "],
-  "mappings": ";AACI;AAAM,WAAA;AAAa,OAAA;AAAQ,iBAAA,IAAA,MAAA,IAAA;AAAsC,iBAAA;AAAmB,cAAA;;AACpF;AAAO,YAAA;AAAkB,UAAA;AAAY,WAAA,EAAA;AAAe,UAAA;AAAS,cAAA;AAAgB,QAAA;AAAa,eAAA;AAAgB,SAAA,IAAA;AAAoB,UAAA;AAAe,eAAA;;AAC7I,MAAA;AAAa,SAAA,IAAA;;AACb,MAAA,CAAA;AAAU,SAAA,IAAA;;AACV,MAAA,CADA,EACA;AAAiB,WAAA;AAAW,YAAA;AAAkB,QAAA;AAAU,SAAA;AAAW,UAAA;AAAY,UAAA;AAAW,iBAAA;AAAkB,cAAA,IAAA;;AAC5G,CAAA;AAAG,WAAA;AAAoB,eAAA;AAAmB,aAAA;AAAe,UAAA;AAAY,WAAA,EAAA;AAAc,eAAA;AAAgB,iBAAA;AAAkB,cAAA,IAAA;AAA2B,aAAA;AAAe,SAAA,IAAA;;",
-  "names": []
-}

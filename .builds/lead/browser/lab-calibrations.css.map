@@ -1,7 +1,0 @@
-{
-  "version": 3,
-  "sources": ["src/app/features/lab/lab-calibrations.ts"],
-  "sourcesContent": [".bar{display:flex;align-items:center;gap:12px;margin-bottom:14px}"],
-  "mappings": ";AAAA,CAAA;AAAK,WAAA;AAAa,eAAA;AAAmB,OAAA;AAAS,iBAAA;;",
-  "names": []
-}

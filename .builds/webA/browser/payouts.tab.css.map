@@ -1,7 +1,0 @@
-{
-  "version": 3,
-  "sources": ["src/app/features/benefits/payouts.tab.ts"],
-  "sourcesContent": ["\n    .bar{margin-bottom:18px} .bar p{max-width:760px}\n    .strong{font-weight:600}\n    .counts{display:flex;gap:6px;flex-wrap:wrap}\n    .cnt{padding:1px 8px;border-radius:999px;background:var(--stone-100);color:var(--stone-700);white-space:nowrap}\n    .cnt.t-paid{background:var(--ok-soft);color:var(--forest-700)} .cnt.t-failed{background:var(--danger-soft);color:var(--red-600)}\n    .cnt.t-on_hold{background:var(--warn-soft);color:var(--amber-600)}\n    .reason{max-width:300px;color:var(--text-2)}\n    tfoot td{padding:12px 14px;border-top:1px solid var(--border);background:var(--surface-2)}\n    .self{color:var(--amber-600);margin-right:auto}\n    vc-stat{box-shadow:none}\n  "],
-  "mappings": ";AACI,CAAA;AAAK,iBAAA;;AAAoB,CAAzB,IAAyB;AAAO,aAAA;;AAChC,CAAA;AAAQ,eAAA;;AACR,CAAA;AAAQ,WAAA;AAAa,OAAA;AAAQ,aAAA;;AAC7B,CAAA;AAAK,WAAA,IAAA;AAAgB,iBAAA;AAAoB,cAAA,IAAA;AAA4B,SAAA,IAAA;AAAuB,eAAA;;AAC5F,CADA,GACA,CAAA;AAAY,cAAA,IAAA;AAA0B,SAAA,IAAA;;AAAyB,CAD/D,GAC+D,CAAA;AAAc,cAAA,IAAA;AAA8B,SAAA,IAAA;;AAC3G,CAFA,GAEA,CAAA;AAAe,cAAA,IAAA;AAA4B,SAAA,IAAA;;AAC3C,CAAA;AAAQ,aAAA;AAAgB,SAAA,IAAA;;AACxB,MAAA;AAAS,WAAA,KAAA;AAAkB,cAAA,IAAA,MAAA,IAAA;AAAmC,cAAA,IAAA;;AAC9D,CAAA;AAAM,SAAA,IAAA;AAAuB,gBAAA;;AAC7B;AAAQ,cAAA;;",
-  "names": []
-}

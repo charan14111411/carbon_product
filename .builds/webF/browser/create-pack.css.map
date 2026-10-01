@@ -1,7 +1,0 @@
-{
-  "version": 3,
-  "sources": ["src/app/features/methodology/create-pack.ts"],
-  "sourcesContent": [".mt{margin-top:14px} .ft{display:flex;gap:8px}"],
-  "mappings": ";AAAA,CAAA;AAAI,cAAA;;AAAiB,CAAA;AAAI,WAAA;AAAa,OAAA;;",
-  "names": []
-}

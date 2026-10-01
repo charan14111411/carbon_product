@@ -1,7 +1,0 @@
-{
-  "version": 3,
-  "sources": ["src/app/ui/toasts.ts"],
-  "sourcesContent": ["\n    :host{position:fixed;right:20px;bottom:20px;z-index:200;display:flex;flex-direction:column;gap:10px;width:min(380px,calc(100vw - 40px))}\n    .t{display:flex;gap:10px;align-items:flex-start;padding:12px 12px 12px 14px;border-radius:10px;background:var(--stone-900);color:#fff;\n      box-shadow:var(--shadow-lg);animation:in .2s ease-out}\n    .t.success vc-icon:first-child{color:var(--forest-300)} .t.error vc-icon:first-child{color:#f4a39c} .t.info vc-icon:first-child{color:#9cc3ea}\n    .c{flex:1;display:flex;flex-direction:column;gap:2px;font-size:13px} .c span{color:rgba(255,255,255,.75)}\n    button{border:0;background:none;color:rgba(255,255,255,.6);cursor:pointer;padding:2px}\n    @keyframes in{from{opacity:0;transform:translateY(8px)}}\n  "],
-  "mappings": ";AACI;AAAM,YAAA;AAAe,SAAA;AAAW,UAAA;AAAY,WAAA;AAAY,WAAA;AAAa,kBAAA;AAAsB,OAAA;AAAS,SAAA,IAAA,KAAA,EAAA,MAAA,EAAA;;AACpG,CAAA;AAAG,WAAA;AAAa,OAAA;AAAS,eAAA;AAAuB,WAAA,KAAA,KAAA,KAAA;AAA4B,iBAAA;AAAmB,cAAA,IAAA;AAA4B,SAAA;AACzH,cAAA,IAAA;AAA4B,aAAA,GAAA,KAAA;;AAC9B,CAFA,CAEA,CAAA,QAAA,OAAA;AAA+B,SAAA,IAAA;;AAAyB,CAFxD,CAEwD,CAAA,MAAA,OAAA;AAA6B,SAAA;;AAAe,CAFpG,CAEoG,CAAA,KAAA,OAAA;AAA4B,SAAA;;AAChI,CAAA;AAAG,QAAA;AAAO,WAAA;AAAa,kBAAA;AAAsB,OAAA;AAAQ,aAAA;;AAAgB,CAArE,EAAqE;AAAQ,SAAA,KAAA,GAAA,EAAA,GAAA,EAAA,GAAA,EAAA;;AAC7E;AAAO,UAAA;AAAS,cAAA;AAAgB,SAAA,KAAA,GAAA,EAAA,GAAA,EAAA,GAAA,EAAA;AAA2B,UAAA;AAAe,WAAA;;AAC1E,WAJ8B;AAIhB;AAAK,aAAA;AAAU,eAAA,WAAA;;;",
-  "names": []
-}

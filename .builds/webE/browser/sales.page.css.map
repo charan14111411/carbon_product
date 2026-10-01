@@ -1,7 +1,0 @@
-{
-  "version": 3,
-  "sources": ["src/app/features/sales/sales.page.ts"],
-  "sourcesContent": ["\n    .tic{color:var(--stone-500);vertical-align:-2px}\n    .stats{margin-bottom:24px}\n    .filters{display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap}\n    .search{position:relative;flex:1;min-width:240px;max-width:420px}\n    .search vc-icon{position:absolute;left:12px;top:11px;color:var(--text-3)}\n    .search .input{padding-left:34px}\n    .filters select{width:200px}\n    .strong{font-weight:600;color:var(--stone-900)}\n    .tchip{display:inline-flex;align-items:center;gap:6px;white-space:nowrap} .tchip i{width:8px;height:8px;border-radius:2px}\n    .acts{text-align:right;white-space:nowrap}\n    .req{max-width:280px;color:var(--text-2)}\n    .buyer{min-width:120px;max-width:180px}\n    .table td.acts{padding-left:6px;padding-right:10px}\n  "],
-  "mappings": ";AACI,CAAA;AAAK,SAAA,IAAA;AAAuB,kBAAA;;AAC5B,CAAA;AAAO,iBAAA;;AACP,CAAA;AAAS,WAAA;AAAa,OAAA;AAAS,iBAAA;AAAmB,aAAA;;AAClD,CAAA;AAAQ,YAAA;AAAkB,QAAA;AAAO,aAAA;AAAgB,aAAA;;AACjD,CADA,OACA;AAAgB,YAAA;AAAkB,QAAA;AAAU,OAAA;AAAS,SAAA,IAAA;;AACrD,CAFA,OAEA,CAAA;AAAe,gBAAA;;AACf,CAJA,QAIA;AAAgB,SAAA;;AAChB,CAAA;AAAQ,eAAA;AAAgB,SAAA,IAAA;;AACxB,CAAA;AAAO,WAAA;AAAoB,eAAA;AAAmB,OAAA;AAAQ,eAAA;;AAAoB,CAA1E,MAA0E;AAAS,SAAA;AAAU,UAAA;AAAW,iBAAA;;AACxG,CAAA;AAAM,cAAA;AAAiB,eAAA;;AACvB,CAAA;AAAK,aAAA;AAAgB,SAAA,IAAA;;AACrB,CAAA;AAAO,aAAA;AAAgB,aAAA;;AACvB,CAAA,MAAA,EAAA,CAHA;AAGe,gBAAA;AAAiB,iBAAA;;",
-  "names": []
-}

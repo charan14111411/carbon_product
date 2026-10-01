@@ -1,7 +1,0 @@
-{
-  "version": 3,
-  "sources": ["src/app/layout/brand.ts"],
-  "sourcesContent": ["\n    :host{display:inline-flex;align-items:center;gap:10px}\n    .wm{display:flex;flex-direction:column;line-height:1.05}\n    strong{font-size:15px;font-weight:600;letter-spacing:-.01em}\n    .wm span{font-size:11px;font-weight:500;letter-spacing:.14em;text-transform:uppercase;opacity:.7;margin-top:2px}\n    :host(.dark) strong{color:var(--forest-900)}\n  "],
-  "mappings": ";AACI;AAAM,WAAA;AAAoB,eAAA;AAAmB,OAAA;;AAC7C,CAAA;AAAI,WAAA;AAAa,kBAAA;AAAsB,eAAA;;AACvC;AAAO,aAAA;AAAe,eAAA;AAAgB,kBAAA;;AACtC,CAFA,GAEA;AAAS,aAAA;AAAe,eAAA;AAAgB,kBAAA;AAAqB,kBAAA;AAAyB,WAAA;AAAW,cAAA;;AACjG,MAAA,CAAA,MAAA;AAAoB,SAAA,IAAA;;",
-  "names": []
-}

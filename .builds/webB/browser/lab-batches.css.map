@@ -1,7 +1,0 @@
-{
-  "version": 3,
-  "sources": ["src/app/features/lab/lab-batches.ts"],
-  "sourcesContent": ["\n    .bar{display:flex;align-items:center;gap:12px;margin-bottom:14px}\n    .lh{margin-bottom:8px}\n    .blist{border:1px solid var(--border);border-radius:var(--radius-sm);max-height:280px;overflow:auto}\n    .br{display:flex;align-items:center;gap:10px;padding:7px 12px;border-bottom:1px solid var(--stone-100);cursor:pointer;font-size:13px}\n    .br:last-child{border-bottom:0}\n    .br.dis{opacity:.55;cursor:not-allowed}\n    .br input{accent-color:var(--primary);width:16px;height:16px}\n  "],
-  "mappings": ";AACI,CAAA;AAAK,WAAA;AAAa,eAAA;AAAmB,OAAA;AAAS,iBAAA;;AAC9C,CAAA;AAAI,iBAAA;;AACJ,CAAA;AAAO,UAAA,IAAA,MAAA,IAAA;AAA+B,iBAAA,IAAA;AAA+B,cAAA;AAAiB,YAAA;;AACtF,CAAA;AAAI,WAAA;AAAa,eAAA;AAAmB,OAAA;AAAS,WAAA,IAAA;AAAiB,iBAAA,IAAA,MAAA,IAAA;AAAyC,UAAA;AAAe,aAAA;;AACtH,CADA,EACA;AAAe,iBAAA;;AACf,CAFA,EAEA,CAAA;AAAQ,WAAA;AAAY,UAAA;;AACpB,CAHA,GAGA;AAAU,gBAAA,IAAA;AAA4B,SAAA;AAAW,UAAA;;",
-  "names": []
-}

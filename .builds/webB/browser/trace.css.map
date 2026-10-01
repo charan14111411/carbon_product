@@ -1,7 +1,0 @@
-{
-  "version": 3,
-  "sources": ["src/app/features/sampling/trace.ts"],
-  "sourcesContent": ["\n    .chain{list-style:none;margin:0;padding:0;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}\n    .chain li{display:flex;align-items:center;gap:10px;padding:9px 14px;border-bottom:1px solid var(--stone-100);font-size:13.5px;flex-wrap:wrap}\n    .chain li:last-child{border-bottom:0}\n    .chain li.hit{background:var(--forest-50)}\n    .chain span{width:84px;color:var(--text-3);font-size:12px}\n    .chain em{font-style:normal;color:var(--text-2);font-size:12.5px}\n  "],
-  "mappings": ";AACI,CAAA;AAAO,cAAA;AAAgB,UAAA;AAAS,WAAA;AAAU,UAAA,IAAA,MAAA,IAAA;AAA+B,iBAAA,IAAA;AAA4B,YAAA;;AACrG,CADA,MACA;AAAU,WAAA;AAAa,eAAA;AAAmB,OAAA;AAAS,WAAA,IAAA;AAAiB,iBAAA,IAAA,MAAA,IAAA;AAAyC,aAAA;AAAiB,aAAA;;AAC9H,CAFA,MAEA,EAAA;AAAqB,iBAAA;;AACrB,CAHA,MAGA,EAAA,CAAA;AAAc,cAAA,IAAA;;AACd,CAJA,MAIA;AAAY,SAAA;AAAW,SAAA,IAAA;AAAoB,aAAA;;AAC3C,CALA,MAKA;AAAU,cAAA;AAAkB,SAAA,IAAA;AAAoB,aAAA;;",
-  "names": []
-}

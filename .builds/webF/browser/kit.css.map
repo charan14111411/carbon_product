@@ -1,7 +1,0 @@
-{
-  "version": 3,
-  "sources": ["src/app/ui/kit.ts"],
-  "sourcesContent": ["\n    :host{display:block}\n    .track{height:6px;border-radius:3px;background:var(--sand-200);overflow:hidden}\n    .fill{height:100%;border-radius:3px;background:var(--forest-500);transition:width .4s ease}\n    .fill.warn{background:var(--amber-600)} .fill.danger{background:var(--red-600)}\n  "],
-  "mappings": ";AACI;AAAM,WAAA;;AACN,CAAA;AAAO,UAAA;AAAW,iBAAA;AAAkB,cAAA,IAAA;AAA2B,YAAA;;AAC/D,CAAA;AAAM,UAAA;AAAY,iBAAA;AAAkB,cAAA,IAAA;AAA6B,cAAA,MAAA,KAAA;;AACjE,CADA,IACA,CAAA;AAAW,cAAA,IAAA;;AAA6B,CADxC,IACwC,CAAA;AAAa,cAAA,IAAA;;",
-  "names": []
-}

@@ -1,7 +1,0 @@
-{
-  "version": 3,
-  "sources": ["src/app/ui/map-view.ts"],
-  "sourcesContent": ["\n    :host{display:block;position:relative;border-radius:var(--radius);overflow:hidden;border:1px solid var(--border);background:#e8e6df}\n    .map{position:absolute;inset:0}\n    .switch{position:absolute;top:10px;left:10px;display:flex;background:var(--surface);border-radius:8px;box-shadow:var(--shadow);padding:3px;gap:2px;z-index:2}\n    .switch button{border:0;background:none;font:500 12px var(--font);padding:5px 10px;border-radius:6px;color:var(--stone-600);cursor:pointer}\n    .switch button.on{background:var(--forest-600);color:#fff}\n  "],
-  "mappings": ";AACI;AAAM,WAAA;AAAc,YAAA;AAAkB,iBAAA,IAAA;AAA4B,YAAA;AAAgB,UAAA,IAAA,MAAA,IAAA;AAA+B,cAAA;;AACjH,CAAA;AAAK,YAAA;AAAkB,SAAA;;AACvB,CAAA;AAAQ,YAAA;AAAkB,OAAA;AAAS,QAAA;AAAU,WAAA;AAAa,cAAA,IAAA;AAA0B,iBAAA;AAAkB,cAAA,IAAA;AAAyB,WAAA;AAAY,OAAA;AAAQ,WAAA;;AACnJ,CADA,OACA;AAAe,UAAA;AAAS,cAAA;AAAgB,QAAA,IAAA,KAAA,IAAA;AAA0B,WAAA,IAAA;AAAiB,iBAAA;AAAkB,SAAA,IAAA;AAAuB,UAAA;;AAC5H,CAFA,OAEA,MAAA,CAAA;AAAkB,cAAA,IAAA;AAA6B,SAAA;;",
-  "names": []
-}

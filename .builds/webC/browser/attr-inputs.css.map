@@ -1,7 +1,0 @@
-{
-  "version": 3,
-  "sources": ["src/app/features/fields/attr-inputs.ts"],
-  "sourcesContent": ["\n    .req{color:var(--danger);margin-left:2px}\n    .unit-wrap{position:relative}\n    .unit-wrap .input{padding-right:52px}\n    .unit{position:absolute;right:10px;top:50%;transform:translateY(-50%);font-size:12px;color:var(--text-3);pointer-events:none}\n  "],
-  "mappings": ";AACI,CAAA;AAAK,SAAA,IAAA;AAAoB,eAAA;;AACzB,CAAA;AAAW,YAAA;;AACX,CADA,UACA,CAAA;AAAkB,iBAAA;;AAClB,CAAA;AAAM,YAAA;AAAkB,SAAA;AAAW,OAAA;AAAQ,aAAA,WAAA;AAA2B,aAAA;AAAe,SAAA,IAAA;AAAoB,kBAAA;;",
-  "names": []
-}
