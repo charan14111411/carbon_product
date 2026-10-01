@@ -15,20 +15,62 @@ credits, buyers and farmer payouts. Works for any crop.
 |---|---|
 | `api/` | FastAPI backend. One package per business area under `app/modules/`. |
 | `web/` | Angular 22 web app: operations console, offline field app, farmer, buyer and verifier portals. |
-| `docker-compose.yml` | PostgreSQL 16 + PostGIS for local development. |
+| `api/migrations/` | Alembic database migrations, plus ready-to-run SQL scripts for SSMS in `api/migrations/sql/`. |
 | `CONVENTIONS.md` | Rules every module follows (tenancy, append-only, four-eyes, fail-closed). |
 | `docs/VM0042_v2.2_REQUIREMENTS.md` | Every VM0042 v2.2 equation, constant and threshold the code implements, with section and page. |
 | `STATUS.md` | What is built, how it maps to VM0042, and what still needs something outside the software. |
 
 ## Run it locally
 
-Prerequisites: Docker Desktop, Python 3.12+, Node 20+.
+Prerequisites: **SQL Server** (2019 or later) with an empty database, **ODBC Driver 18 for SQL Server**,
+Python 3.12+ and Node 20+. No Docker.
 
-**One command (Windows PowerShell):**
+### 1. Point the API at your database
 
 ```powershell
-.\start-dev.ps1 -Seed      # database + demo data + API + web app
+copy api\.env.example api\.env
 ```
+
+Edit `DATABASE_URL` in `api\.env`. With Windows authentication on the named instance `SQL_LOCAL` and the
+database `carbon_latest`:
+
+```
+DATABASE_URL=mssql+pyodbc://@localhost\SQL_LOCAL/carbon_latest?driver=ODBC+Driver+18+for+SQL+Server&trusted_connection=yes&TrustServerCertificate=yes
+```
+
+With a SQL login, use `mssql+pyodbc://user:password@localhost\SQL_LOCAL/carbon_latest?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes`.
+Every part of the app (API, migrations, demo seed) reads the database from this one setting. `api\.env` is
+committed to git, so use Windows authentication or keep real passwords out of it.
+
+### 2. Create the tables (pick one)
+
+* **From the terminal (recommended):**
+  ```powershell
+  cd api
+  ..\.venv\Scripts\python -m alembic upgrade head
+  ```
+* **From SSMS:** open `api\migrations\sql\0001_initial_schema.sql`, select the `carbon_latest` database and
+  press Execute. The script also records the migration version, so `alembic upgrade head` keeps working later.
+
+### 3. Run
+
+```powershell
+python -m venv .venv
+.venv\Scripts\pip install -r api\requirements.txt
+cd api
+..\.venv\Scripts\python -m scripts.seed_demo --reset     # optional: demo data (~6 min, wipes the app's tables)
+..\.venv\Scripts\python -m uvicorn app.main:app --port 8000
+```
+
+In a second terminal:
+
+```powershell
+cd web
+npm install
+npx ng serve                                             # http://localhost:4200
+```
+
+Or run everything with one command: `.\start-dev.ps1` (add `-Seed` to rebuild the demo data first).
 
 Then open http://localhost:4200. Demo accounts (password `Demo-Pass-2026!`) and a verifier link are
 printed at the end of the seed and saved to `api/var/demo_accounts.txt`.
@@ -46,21 +88,26 @@ printed at the end of the seed and saved to `api/var/demo_accounts.txt`.
 | farmer@example.com | Farmer portal (`/farmer`, English + Kannada) |
 | client@example.com | Client portfolio (read-only, farmer details masked) |
 
-**Step by step:**
+## Database migrations
 
-```bash
-docker compose up -d                                     # PostgreSQL + PostGIS on :5433
-python -m venv .venv && .venv/Scripts/pip install -r api/requirements.txt
-cd api
-../.venv/Scripts/python -m scripts.seed_demo --reset     # demo organisation and a full example project (~6 min)
-../.venv/Scripts/python -m uvicorn app.main:app --port 8000
-cd ../web && npm install && npx ng serve                 # http://localhost:4200
-```
+The schema is owned by Alembic (`api/migrations`). Run these from the `api` folder:
+
+| Task | Command |
+|---|---|
+| Apply all migrations | `..\.venv\Scripts\python -m alembic upgrade head` |
+| See the current version | `..\.venv\Scripts\python -m alembic current` |
+| After changing a model, create a migration | `..\.venv\Scripts\python -m alembic revision --autogenerate -m "what changed"` |
+| Check the models and database match | `..\.venv\Scripts\python -m alembic check` |
+| Write an SSMS script for a new migration | `..\.venv\Scripts\python -m alembic upgrade 0001:head --sql > migrations\sql\0002_what_changed.sql` |
+| Undo the last migration | `..\.venv\Scripts\python -m alembic downgrade -1` |
+
+Text columns are created as `NVARCHAR`, so Kannada and other non-Latin text is stored correctly.
 
 ## Tests
 
 ```bash
-cd api && ../.venv/Scripts/python -m pytest      # backend
+cd api && ../.venv/Scripts/python -m pytest      # backend (in-memory SQLite; set TEST_DATABASE_URL to use a
+                                                 # scratch SQL Server database — never the real one)
 cd web && npx ng build                           # type-checks and builds the web app
 ```
 

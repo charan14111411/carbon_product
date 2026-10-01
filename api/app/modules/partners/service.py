@@ -274,7 +274,7 @@ def dispatch_pending(db: Session, sender: Sender | None = None, *, org_id: uuid.
     ``WebhookDelivery`` row; after ``MAX_ATTEMPTS`` failures an event is no longer retried."""
     sender = sender or default_sender
     stats = {"attempted": 0, "delivered": 0, "failed": 0, "gave_up": 0}
-    q = select(Webhook).where(Webhook.is_active.is_(True))
+    q = select(Webhook).where(Webhook.is_active == True)
     if org_id:
         q = q.where(Webhook.org_id == org_id)
     for hook in db.scalars(q.order_by(Webhook.created_at)).all():

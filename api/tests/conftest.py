@@ -3,7 +3,10 @@ import tempfile
 import uuid
 from pathlib import Path
 
-os.environ["DATABASE_URL"] = "sqlite://"
+# Tests run on in-memory SQLite. Set TEST_DATABASE_URL to run them on a scratch SQL Server database instead
+# (never your real one: every test drops and recreates all tables).
+TEST_DB = os.environ.get("TEST_DATABASE_URL", "sqlite://")
+os.environ["DATABASE_URL"] = TEST_DB
 os.environ["ENVIRONMENT"] = "test"
 os.environ["EVIDENCE_DIR"] = str(Path(tempfile.mkdtemp(prefix="vc-evidence-")))
 
@@ -24,7 +27,7 @@ ROLES = [
 
 @pytest.fixture()
 def client():
-    dbmod.configure("sqlite://")
+    dbmod.configure(TEST_DB)
     load_models()
     dbmod.Base.metadata.create_all(dbmod.engine())
     with TestClient(app) as c:

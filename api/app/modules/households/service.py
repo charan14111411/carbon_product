@@ -21,14 +21,14 @@ from app.modules.portfolio.masking import farmer_public, masks_pii
 def _members(db: Session, h: Household, active_only: bool = True) -> list[HouseholdMember]:
     q = select(HouseholdMember).where(HouseholdMember.household_id == h.id)
     if active_only:
-        q = q.where(HouseholdMember.is_active.is_(True))
+        q = q.where(HouseholdMember.is_active == True)
     return list(db.scalars(q.order_by(HouseholdMember.created_at)).all())
 
 
 def _current_household(db: Session, org_id: uuid.UUID, farmer_id: uuid.UUID) -> Household | None:
     return db.scalars(select(Household).join(HouseholdMember, HouseholdMember.household_id == Household.id).where(
         Household.org_id == org_id, Household.status == "active", HouseholdMember.farmer_id == farmer_id,
-        HouseholdMember.is_active.is_(True))).first()
+        HouseholdMember.is_active == True)).first()
 
 
 def _ensure_free(db: Session, org_id: uuid.UUID, farmer: Farmer, household_id: uuid.UUID | None = None) -> None:
@@ -156,7 +156,7 @@ def list_households(db: Session, user: CurrentUser, village: str | None, farmer_
     if farmer_id:
         f = get_owned(db, Farmer, farmer_id, user, "Farmer")
         q = q.where(Household.id.in_(select(HouseholdMember.household_id).where(
-            HouseholdMember.farmer_id == f.id, HouseholdMember.is_active.is_(True))))
+            HouseholdMember.farmer_id == f.id, HouseholdMember.is_active == True)))
     return list(db.scalars(q).all())
 
 

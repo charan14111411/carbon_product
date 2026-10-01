@@ -14,8 +14,11 @@ class Settings(BaseSettings):
     app_name: str = "Varsapradaya Carbon"
     environment: str = "development"  # development | test | staging | production
 
-    database_url: str = "postgresql+psycopg://vcarbon:vcarbon_dev@localhost:5433/vcarbon"
-    auto_create_schema: bool = True
+    # Set in api/.env (copy api/.env.example). SQL Server example:
+    # mssql+pyodbc://@localhost\SQL_LOCAL/carbon_latest?driver=ODBC+Driver+18+for+SQL+Server&trusted_connection=yes&TrustServerCertificate=yes
+    database_url: str = ""
+    # The schema is owned by the Alembic migrations (api/migrations). Only tests and throw-away databases set this.
+    auto_create_schema: bool = False
 
     jwt_secret: str = "dev-only-secret-change-me-0123456789abcdef"
     jwt_algorithm: str = "HS256"
@@ -41,4 +44,9 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    settings = Settings()
+    if not settings.database_url:
+        raise RuntimeError(
+            f"DATABASE_URL is not set. Copy {API_ROOT / '.env.example'} to {API_ROOT / '.env'} and put your "
+            "database address in it.")
+    return settings

@@ -15,7 +15,9 @@ import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Uuid, create_engine, event
+from sqlalchemy import DateTime, ForeignKey, String, Text, Unicode, Uuid, create_engine, event
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.sql.elements import BindParameter
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, declared_attr, mapped_column, sessionmaker
 
 from app.core.config import get_settings
@@ -74,8 +76,36 @@ _engine = None
 _SessionLocal: sessionmaker[Session] | None = None
 
 
+# SQL Server: VARCHAR/TEXT hold only the database code page (Latin-1 by default), which would turn Kannada,
+# "₹" or "²" into "?". Every string column is created as NVARCHAR (Unicode) instead.
+@compiles(String, "mssql")
+def _mssql_string(type_: String, compiler, **kw) -> str:
+    return f"NVARCHAR({type_.length})" if type_.length and type_.length <= 4000 else "NVARCHAR(max)"
+
+
+@compiles(Text, "mssql")
+def _mssql_text(type_: Text, compiler, **kw) -> str:
+    return "NVARCHAR(max)"
+
+
+# SQL Server accepts at most 2,100 parameters per statement, and ``col.in_(ids)`` sends one per id. On SQL Server,
+# IN lists are rendered as literal values when the statement runs (SQLAlchemy's "literal_execute", which quotes them
+# with the column type's own literal rules), so any list length works.
+@compiles(BindParameter, "mssql")
+def _mssql_bindparam(element: BindParameter, compiler, **kw) -> str:
+    if element.expanding and not element.literal_execute:
+        element = element._clone()
+        element.literal_execute = True
+        if isinstance(element.type, String) and not isinstance(element.type, Unicode):
+            element.type = Unicode(element.type.length)  # N'…' literals, so non-Latin text isn't lost
+    return compiler.visit_bindparam(element, **kw)
+
+
 def _make_engine(url: str):
     kwargs: dict = {"pool_pre_ping": True}
+    if url.startswith("mssql"):
+        kwargs["pool_size"] = 10
+        kwargs["max_overflow"] = 20
     if url.startswith("sqlite"):
         kwargs["connect_args"] = {"check_same_thread": False}
         if url in ("sqlite://", "sqlite:///:memory:"):

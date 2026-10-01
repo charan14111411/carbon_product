@@ -233,7 +233,7 @@ def generate_obligations(db: Session, user: CurrentUser, project_id: str, body: 
         ref = {"key": key, "value": years, "source": source}
         cur = db.scalars(scoped(MonitoringObligation, user).where(
             MonitoringObligation.project_id == project.id, MonitoringObligation.kind == kind,
-            MonitoringObligation.generated.is_(True), MonitoringObligation.status == "open")).first()
+            MonitoringObligation.generated == True, MonitoringObligation.status == "open")).first()
         if cur is None:
             o = MonitoringObligation(org_id=user.org_id, created_by=user.id, project_id=project.id, kind=kind,
                                      title=title, due_on=due, basis=basis, rule_ref=ref, anchor_date=anchor,

@@ -57,7 +57,7 @@ def _check_schema(defs: list[dict[str, Any]]) -> None:
 def list_crops(db: Session, user: CurrentUser, include_inactive: bool = False) -> list[Crop]:
     q = scoped(Crop, user).order_by(Crop.name)
     if not include_inactive:
-        q = q.where(Crop.is_active.is_(True))
+        q = q.where(Crop.is_active == True)
     return list(db.scalars(q).all())
 
 
@@ -93,7 +93,7 @@ def list_practice_types(
 ) -> list[PracticeType]:
     q = scoped(PracticeType, user).order_by(PracticeType.name)
     if not include_inactive:
-        q = q.where(PracticeType.is_active.is_(True))
+        q = q.where(PracticeType.is_active == True)
     rows = list(db.scalars(q).all())
     if crop_code:
         rows = [p for p in rows if not p.crop_codes or crop_code in p.crop_codes]

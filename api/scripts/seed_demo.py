@@ -26,7 +26,7 @@ interventions, households, intelligence data and a draft QA1 model (register ill
 only). A millets pilot (KRS-P2) is left in fieldwork for the field app, with a VM0042
 Appendix 6 multi-stage design (fields drawn by PPS).
 
-``--reset`` drops and recreates every table first. Without it the script refuses to run
+``--reset`` drops every table and rebuilds the schema with the migrations first. Without it the script refuses to run
 if the demo organisation already exists. It never runs against a production environment.
 """
 
@@ -315,15 +315,16 @@ def bootstrap(reset: bool) -> dict[str, Any]:
     from app.main import load_models
     from app.modules.identity.models import Organization, User
 
+    from app.core import migrate
+
     load_models()
-    engine = dbmod.engine()
     if reset:
-        step("Resetting the database (drop and recreate every table)")
-        dbmod.Base.metadata.drop_all(engine)
-        dbmod.Base.metadata.create_all(engine)
-        log(f"{len(dbmod.Base.metadata.tables)} tables recreated")
+        step("Resetting the database (drop every table, then run the migrations)")
+        migrate.drop_all_tables()
+        migrate.upgrade_head()
+        log(f"{len(dbmod.Base.metadata.tables)} tables recreated by the migrations")
     else:
-        dbmod.Base.metadata.create_all(engine)
+        migrate.upgrade_head()
         with dbmod.session_factory()() as s:
             if s.scalar(select(Organization).where(Organization.slug == ORG_SLUG)):
                 raise SeedError(f"The demo organisation '{ORG_SLUG}' already exists. Re-run with --reset to rebuild it.")

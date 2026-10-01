@@ -21,7 +21,7 @@ The engineering reference for every equation, constant and threshold is
 **Phase 0 — Foundations.** Multi-tenant data model. Other organisations' records return 404. Sign-in with
 bcrypt, JWT and two-step verification for privileged roles. Permission matrix. Append-only ledger tables:
 edits are refused before they reach the database. Four-eyes approvals, audit trail, SHA-256 evidence store,
-one error format, event outbox, PostgreSQL + PostGIS.
+one error format, event outbox, SQL Server with Alembic migrations (`api/migrations`, plus SSMS scripts).
 
 **Phase 1 — MRV core.**
 * Programmes, projects, farmers, FPOs and households.
@@ -82,8 +82,7 @@ retention.
 | Verra templates | The package and CSV annex carry the data. The official Verra ERR spreadsheet and monitoring-report templates still have to be filled from them. |
 | NPR score | The worksheet records the VCS AFOLU Non-Permanence Risk Tool result; the tool itself is completed outside the platform. |
 | Real providers | Weather, soil, DEM, satellite, registry, payout, eSign and WhatsApp/SMS adapters ship with clearly labelled simulated providers. Plug in real ones with credentials. |
-| Database migrations | The schema is created from the models on start-up. Add Alembic migrations before the first production deployment. |
-| Deployment | Runs locally with Docker. Production hosting, backups, monitoring and a penetration test are still to do. |
+| Deployment | Runs locally from the terminal against SQL Server. Production hosting, backups, monitoring and a penetration test are still to do. |
 | Field and language testing | Test the field app on real phones in the field; have a native speaker review the Kannada. |
 
 ## Quality
