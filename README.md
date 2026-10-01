@@ -18,6 +18,7 @@ credits, buyers and farmer payouts. Works for any crop.
 | `api/migrations/` | Alembic database migrations, plus ready-to-run SQL scripts for SSMS in `api/migrations/sql/`. |
 | `CONVENTIONS.md` | Rules every module follows (tenancy, append-only, four-eyes, fail-closed). |
 | `docs/VM0042_v2.2_REQUIREMENTS.md` | Every VM0042 v2.2 equation, constant and threshold the code implements, with section and page. |
+| `docs/TESTING_GUIDE.md` | Hands-on guide: concepts, the 13 roles, outside services, and testing every flow from an empty database. |
 | `STATUS.md` | What is built, how it maps to VM0042, and what still needs something outside the software. |
 
 ## Run it locally

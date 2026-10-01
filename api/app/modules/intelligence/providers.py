@@ -18,20 +18,22 @@ Indices (all OBSERVED except LAI):
   absolute LAI values. It is computed by the platform
   from each pass's NDVI (``lai_from_ndvi``), so it works with any provider that supplies NDVI.
 
-Choose with ``VC_SATELLITE_PROVIDER`` (default ``simulated_sentinel``). To add a real
-provider (e.g. Sentinel Hub, Google Earth Engine) implement ``SatelliteProvider.indices``
+Choose with ``VC_SATELLITE_PROVIDER`` (process environment or api/.env; default ``simulated_sentinel``).
+``planetary_computer`` is the real provider: Sentinel-2 L2A NDVI/NDMI/NDWI and Landsat 8/9 LST from Microsoft
+Planetary Computer, computed inside the field polygon with cloud pixels removed (see ``planetary_computer.py``).
+To add another (e.g. Sentinel Hub, Google Earth Engine) implement ``SatelliteProvider.indices``
 and call ``register_satellite_provider("sentinel_hub", factory)``.
 """
 
 from __future__ import annotations
 
 import math
-import os
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Protocol
 
+from app.core.config import provider_choice
 from app.modules.supporting.providers import normal, uniform, wetness
 
 CLOUD_LIMIT_PCT = 40.0
@@ -60,6 +62,7 @@ class FieldRef:
     latitude: float
     longitude: float
     crop_code: str | None
+    boundary: dict | None = field(default=None, compare=False, hash=False)  # GeoJSON polygon, when known
 
 
 @dataclass(frozen=True)
@@ -137,7 +140,15 @@ class SimulatedSentinel:
         return out
 
 
-_REGISTRY: dict[str, Callable[[], SatelliteProvider]] = {"simulated_sentinel": SimulatedSentinel}
+def _planetary_computer() -> SatelliteProvider:
+    from app.modules.intelligence.planetary_computer import PlanetaryComputer
+
+    return PlanetaryComputer()
+
+
+_REGISTRY: dict[str, Callable[[], SatelliteProvider]] = {
+    "simulated_sentinel": SimulatedSentinel, "planetary_computer": _planetary_computer,
+}
 
 
 def register_satellite_provider(name: str, factory: Callable[[], SatelliteProvider]) -> None:
@@ -145,7 +156,7 @@ def register_satellite_provider(name: str, factory: Callable[[], SatelliteProvid
 
 
 def get_satellite_provider() -> SatelliteProvider:
-    name = os.environ.get("VC_SATELLITE_PROVIDER", "simulated_sentinel")
+    name = provider_choice("VC_SATELLITE_PROVIDER", "simulated_sentinel")
     if name not in _REGISTRY:
         raise RuntimeError(f"Unknown satellite provider '{name}'. Registered: {sorted(_REGISTRY)}")
     return _REGISTRY[name]()

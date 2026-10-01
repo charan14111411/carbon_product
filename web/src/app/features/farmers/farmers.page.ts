@@ -9,14 +9,14 @@ import { ToastService } from '../../core/toast.service';
 import { Icon } from '../../ui/icon';
 import { Badge, Empty, ErrorBox, Loading, Modal, PageHeader, TabItem, Tabs } from '../../ui/kit';
 import { fieldMap, formMessage } from '../programmes/form-errors';
-import { MemberResult } from './member-result';
-import { Farmer, FarmerPage, formatPhone, Fpo, initials, LANGUAGES, MemberLookup } from './types';
+import { MemberResult, MemberUnavailable } from './member-result';
+import { Farmer, FarmerPage, formatPhone, Fpo, initials, LANGUAGES, MEMBER_UNAVAILABLE, MemberLookup } from './types';
 
 const PAGE = 25;
 
 @Component({
   selector: 'vc-farmers-page',
-  imports: [FormsModule, PageHeader, Loading, ErrorBox, Empty, Badge, Modal, Tabs, Icon, MemberResult,
+  imports: [FormsModule, PageHeader, Loading, ErrorBox, Empty, Badge, Modal, Tabs, Icon, MemberResult, MemberUnavailable,
     NumPipe, DayPipe, HumanPipe],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
@@ -138,7 +138,7 @@ const PAGE = 25;
         <div class="field">
           <label for="fph">Mobile number</label>
           <div class="row" style="--gap:8px">
-            <input id="fph" class="input num" name="phone" inputmode="tel" [(ngModel)]="form.phone" (ngModelChange)="lookup.set(null)"
+            <input id="fph" class="input num" name="phone" inputmode="tel" [(ngModel)]="form.phone" (ngModelChange)="lookup.set(null); unavailable.set(null)"
               placeholder="+91 98450 12345" [class.invalid]="fe()['phone']" />
             <button type="button" class="btn btn-secondary" (click)="checkMember()" [disabled]="looking() || form.phone.trim().length < 6">
               <vc-icon name="verified" />{{ looking() ? 'Checking…' : 'Check membership' }}
@@ -147,6 +147,7 @@ const PAGE = 25;
           @if (fe()['phone']) { <span class="error">{{ fe()['phone'] }}</span> }
           @else { <span class="hint">Checks the Varsapradaya member platform. Nothing is saved until you add the farmer.</span> }
         </div>
+        @if (unavailable() !== null) { <vc-member-unavailable [message]="unavailable()!" [busy]="looking()" (retry)="checkMember()" /> }
         @if (lookupError()) { <vc-error title="Couldn't check membership" [message]="lookupError()!" /> }
         @if (lookup(); as r) { <vc-member-result [result]="r" /> }
 
@@ -259,6 +260,7 @@ export class FarmersPage {
   looking = signal(false);
   lookup = signal<MemberLookup | null>(null);
   lookupError = signal<string | null>(null);
+  unavailable = signal<string | null>(null);
   form = this.blank();
 
   fpoOpen = signal(false);
@@ -319,6 +321,7 @@ export class FarmersPage {
   openCreate() {
     this.form = this.blank();
     this.lookup.set(null);
+    this.unavailable.set(null);
     this.lookupError.set(null);
     this.formError.set(null);
     this.fe.set({});
@@ -329,8 +332,13 @@ export class FarmersPage {
     this.looking.set(true);
     this.lookupError.set(null);
     this.api.post<MemberLookup>('/farmers/member-lookup', { phone: this.form.phone.trim() }).subscribe({
-      next: r => { this.looking.set(false); this.lookup.set(r); },
-      error: (e: ApiError) => { this.looking.set(false); this.lookupError.set(e.message); },
+      next: r => { this.looking.set(false); this.unavailable.set(null); this.lookup.set(r); },
+      error: (e: ApiError) => {
+        this.looking.set(false);
+        this.lookup.set(null);
+        if (e.code === MEMBER_UNAVAILABLE) this.unavailable.set(e.message);
+        else { this.unavailable.set(null); this.lookupError.set(e.message); }
+      },
     });
   }
 

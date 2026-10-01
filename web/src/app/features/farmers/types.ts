@@ -29,20 +29,74 @@ export interface Farmer {
 
 export interface FarmerPage { items: Farmer[]; total: number; limit: number; offset: number }
 
+/** Device tier from the readings that actually arrived: soil + weather = full, one of them = partial. */
+export type DeviceTier = 'full' | 'partial' | 'none';
+
+export interface MemberFarm {
+  external_farm_id: string;
+  name: string;
+  has_soilsync: boolean;
+  has_microclime: boolean;
+  estate_id: string | null;
+  estate_name: string | null;
+  postal_code: string | null;
+  crops: string[];
+  plants_per_hectare: number | null;
+  has_sensor: boolean;
+  has_weather: boolean;
+  subscription_active: boolean;
+  tier: DeviceTier;
+  notes: string[];
+  imported_farm_id: string | null;
+}
+
 export interface MemberLookup {
   phone: string;
   is_member: boolean;
   member_id: string | null;
-  farms: { external_farm_id: string; name: string; has_soilsync: boolean; has_microclime: boolean }[];
+  farms: MemberFarm[];
   existing_farmer_id: string | null;
   linked_farmer_id: string | null;
+  source: 'simulated' | 'farmfuture' | string;
+  tier: DeviceTier;
+  summary: string;
+  warnings: string[];
 }
+
+export interface MemberFarmImport {
+  farmer_id: string;
+  member_id: string;
+  created: { id: string; name: string; external_farm_id: string; postal_code: string | null; notes: string }[];
+  skipped: { external_farm_id: string; farm_id: string; farmer_id: string; reason: string }[];
+  fields_created: number;
+  note: string;
+}
+
+export interface DeviceRefresh {
+  farm_id: string;
+  external_farm_id: string;
+  tier: DeviceTier;
+  devices: {
+    id: string; external_id: string; kind: string; name: string; status: string; last_seen_at: string | null; created: boolean;
+    readings: { parameter: string; label: string; value: number; unit: string; observed_at: string | null; data_class: string }[];
+  }[];
+  registered: number;
+  updated: number;
+  readings_incomplete: boolean;
+  latest_only: boolean;
+  history_note: string;
+  readings_kept?: number;
+  notes: string[];
+}
+
+/** The member platform couldn't be asked: not the same as "not a member". */
+export const MEMBER_UNAVAILABLE = 'MEMBER_DIRECTORY_UNAVAILABLE';
 
 export interface FarmerOverview {
   farmer: Farmer;
   fpo: Fpo | null;
   farms: {
-    id: string; name: string; village: string; external_farm_id: string | null;
+    id: string; name: string; village: string; external_farm_id: string | null; postal_code?: string | null;
     fields: { id: string; code: string; name: string; area_ha: number; crop_code: string | null; status: string }[];
   }[];
   total_area_ha: number;

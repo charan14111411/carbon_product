@@ -6,7 +6,9 @@ Provider
 deterministic surface (a regional base plus a few sinusoidal hill systems whose amplitude varies
 smoothly in space), so neighbouring fields get consistent terrain and some regions are hilly
 while others are nearly level. Its ``source_ref`` contains "(simulated)". A real DEM
-(SRTM / Copernicus GLO-30) plugs in via ``register_terrain_provider`` + ``VC_TERRAIN_PROVIDER``.
+(Copernicus GLO-30 via Planetary Computer, ``copernicus_dem.py``) is chosen with
+``VC_TERRAIN_PROVIDER=copernicus_dem`` (process environment or api/.env); others plug in via
+``register_terrain_provider``.
 
 Method
 ------
@@ -34,7 +36,6 @@ Method
 from __future__ import annotations
 
 import math
-import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
@@ -42,6 +43,7 @@ from typing import Protocol
 import numpy as np
 from shapely.geometry import Point
 
+from app.core.config import provider_choice
 from app.core.geo import parse_polygon
 from app.modules.land.domain import SLOPE_CLASSES as _LAND_SLOPES
 from app.modules.land.domain import slope_class as _land_slope_class
@@ -93,7 +95,13 @@ class SimulatedDEM:
         return f"dem (simulated) around {lat:.4f},{lon:.4f}"
 
 
-_TERRAIN: dict[str, Callable[[], TerrainProvider]] = {"simulated_dem": SimulatedDEM}
+def _copernicus_dem() -> TerrainProvider:
+    from app.modules.supporting.copernicus_dem import CopernicusDEM  # real GLO-30 via Planetary Computer
+
+    return CopernicusDEM()
+
+
+_TERRAIN: dict[str, Callable[[], TerrainProvider]] = {"simulated_dem": SimulatedDEM, "copernicus_dem": _copernicus_dem}
 
 
 def register_terrain_provider(name: str, factory: Callable[[], TerrainProvider]) -> None:
@@ -101,7 +109,7 @@ def register_terrain_provider(name: str, factory: Callable[[], TerrainProvider])
 
 
 def get_terrain_provider() -> TerrainProvider:
-    name = os.environ.get("VC_TERRAIN_PROVIDER", "simulated_dem")
+    name = provider_choice("VC_TERRAIN_PROVIDER", "simulated_dem")
     if name not in _TERRAIN:
         raise RuntimeError(f"Unknown terrain provider '{name}'. Registered: {sorted(_TERRAIN)}")
     return _TERRAIN[name]()

@@ -8,11 +8,11 @@ from app.core.db import get_db
 from app.core.permissions import P
 from app.core.tenancy import get_owned
 from app.modules.farmers import service
-from app.modules.farmers.member_directory import MemberDirectory, get_member_directory
+from app.modules.farmers.member_directory import MemberDirectoryProtocol, get_member_directory
 from app.modules.farmers.models import FPO, Farmer
 from app.modules.farmers.schemas import (
     FarmerIn, FarmerOut, FarmerOverview, FarmerPage, FarmerPatch, FarmerStatus, FPOIn, FPOOut, FPOPatch,
-    MemberLookupIn, MemberLookupOut,
+    MemberFarmImportIn, MemberFarmImportOut, MemberLookupIn, MemberLookupOut,
 )
 
 router = APIRouter(tags=["Farmers"])
@@ -60,9 +60,22 @@ def create_farmer(body: FarmerIn, user: CurrentUser = Depends(_write), db: Sessi
 @router.post("/farmers/member-lookup", response_model=MemberLookupOut)
 def member_lookup(
     body: MemberLookupIn, user: CurrentUser = Depends(_write), db: Session = Depends(get_db),
-    directory: MemberDirectory = Depends(get_member_directory),
+    directory: MemberDirectoryProtocol = Depends(get_member_directory),
 ):
+    """Is this number a Varsapradaya member, and what farms and devices do they have there?
+
+    503 ``MEMBER_DIRECTORY_UNAVAILABLE`` when the platform can't be reached -- never "not a member"."""
     return service.member_lookup(db, user, directory, body.phone, body.farmer_id)
+
+
+@router.post("/farmers/{farmer_id}/import-member-farms", response_model=MemberFarmImportOut)
+def import_member_farms(
+    farmer_id: str, body: MemberFarmImportIn, user: CurrentUser = Depends(_write), db: Session = Depends(get_db),
+    directory: MemberDirectoryProtocol = Depends(get_member_directory),
+):
+    """Create farm records from the farmer's Varsapradaya farms (already-imported ones are skipped).
+    No fields are created: the platform holds no boundaries."""
+    return service.import_member_farms(db, user, directory, farmer_id, body.external_farm_ids)
 
 
 @router.get("/farmers/{farmer_id}", response_model=FarmerOut)

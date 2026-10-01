@@ -58,6 +58,7 @@ class DeviceOut(OrmOut):
     status: str
     last_seen_at: datetime | None
     calibrated_on: date | None
+    latest_readings: dict | None = None
     created_at: datetime
 
 

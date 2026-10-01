@@ -106,11 +106,25 @@ class MemberLookupIn(BaseModel):
     farmer_id: str | None = None  # when given, link the member to this farmer
 
 
+DeviceTier = Literal["full", "partial", "none"]
+
+
 class MemberFarmOut(BaseModel):
     external_farm_id: str
     name: str
-    has_soilsync: bool
-    has_microclime: bool
+    has_soilsync: bool  # SoilSync readings actually arrived
+    has_microclime: bool  # MicroClime (measured, not forecast) readings actually arrived
+    estate_id: str | None = None
+    estate_name: str | None = None
+    postal_code: str | None = None
+    crops: list[str] = []
+    plants_per_hectare: float | None = None
+    has_sensor: bool = False  # the platform's own flags (a prior only)
+    has_weather: bool = False
+    subscription_active: bool = True
+    tier: DeviceTier = "none"
+    notes: list[str] = []
+    imported_farm_id: str | None = None  # our Farm already created from this one, if any
 
 
 class MemberLookupOut(BaseModel):
@@ -120,6 +134,38 @@ class MemberLookupOut(BaseModel):
     farms: list[MemberFarmOut]
     existing_farmer_id: str | None
     linked_farmer_id: str | None
+    source: str = "simulated"  # simulated | farmfuture
+    tier: DeviceTier = "none"
+    summary: str = ""
+    warnings: list[str] = []
+
+
+class MemberFarmImportIn(BaseModel):
+    external_farm_ids: list[str] = Field(min_length=1, max_length=50)
+
+
+class ImportedFarmOut(BaseModel):
+    id: str
+    name: str
+    external_farm_id: str
+    postal_code: str | None
+    notes: str
+
+
+class SkippedFarmOut(BaseModel):
+    external_farm_id: str
+    farm_id: str
+    farmer_id: str
+    reason: str
+
+
+class MemberFarmImportOut(BaseModel):
+    farmer_id: str
+    member_id: str
+    created: list[ImportedFarmOut]
+    skipped: list[SkippedFarmOut]
+    fields_created: int = 0
+    note: str
 
 
 # ------------------------------------------------------------------ farmer 360
@@ -137,6 +183,7 @@ class OverviewFarm(BaseModel):
     name: str
     village: str
     external_farm_id: str | None
+    postal_code: str | None = None
     fields: list[OverviewField]
 
 

@@ -9,6 +9,13 @@ TEST_DB = os.environ.get("TEST_DATABASE_URL", "sqlite://")
 os.environ["DATABASE_URL"] = TEST_DB
 os.environ["ENVIRONMENT"] = "test"
 os.environ["EVIDENCE_DIR"] = str(Path(tempfile.mkdtemp(prefix="vc-evidence-")))
+# Tests never call public APIs: pin the outside-data providers to the simulations even if api/.env switches them.
+for _env, _sim in (("VC_WEATHER_PROVIDER", "simulated_nasa_power"), ("VC_SOIL_PROVIDER", "simulated_soilgrids"),
+                   ("VC_SATELLITE_PROVIDER", "simulated_sentinel"), ("VC_TERRAIN_PROVIDER", "simulated_dem")):
+    os.environ[_env] = _sim
+# Never the live Varsapradaya / FarmFuture API either (its recorded test number belongs to a real customer).
+os.environ["VC_MEMBER_DIRECTORY"] = "simulated"
+os.environ["VC_DEVICE_PROVIDER"] = "simulated"
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

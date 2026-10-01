@@ -6,7 +6,8 @@ Tiers (best first):
 2. A Varsapradaya device within 25 km horizontally *and* within 300 m elevation (when both
    elevations are known), nearest first.
 3. An external provider (regional weather reanalysis, soil maps).
-0. Not available – the value is ``None`` and the note says why.
+0. Not available – the value is ``None`` and the note says why (including "external source unavailable"
+   when a real provider could not be reached; the sync carries on).
 
 Quality (0..1) = tier base (1: 1.0, 2: 0.8, 3: 0.5) × distance factor (tier 2 only:
 max(0.5, 1 − d/50 km)) × freshness (1.0 normally; 0.9 for a device that has never sent a
@@ -26,6 +27,7 @@ from datetime import UTC, date, datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.errors import ProviderUnavailable
 from app.core.geo import distance_m
 from app.modules.land.models import Field
 from app.modules.supporting.models import PARAMETERS, Device
@@ -118,11 +120,20 @@ def _org_devices(db: Session, f: Field, parameter: str) -> list[Device]:
     return [d for d in rows if parameter in (d.parameters or [])]
 
 
+def _has_kept_readings(db: Session, d: Device, parameter: str) -> bool:
+    from app.modules.supporting.models import DeviceReading
+
+    return db.scalar(select(DeviceReading.id).where(DeviceReading.device_id == d.id,
+                                                    DeviceReading.parameter == parameter).limit(1)) is not None
+
+
 def candidates(db: Session, f: Field, parameter: str) -> _Candidates:
     out = _Candidates()
     for d in _org_devices(db, f, parameter):
         dist = km(f.centroid_lat, f.centroid_lon, d.latitude, d.longitude)
-        if d.status != "online":
+        if d.status != "online" and not (d.status == "offline" and _has_kept_readings(db, d, parameter)):
+            # An offline device is skipped, unless real readings it sent earlier were kept (Varsapradaya
+            # devices): those are still measurements for the days they cover.
             out.excluded.append(f"{d.name} is {d.status}")
             continue
         if d.field_id == f.id or (d.farm_id is not None and d.farm_id == f.farm_id):
@@ -160,7 +171,10 @@ def bias_correction(
         station = providers.device.daily(device_ref(d), parameter, window_start, end)
         if len(station) < BIAS_MIN_OVERLAP_DAYS:
             continue
-        external = providers.weather.daily(d.latitude, d.longitude, parameter, window_start, end)
+        try:
+            external = providers.weather.daily(d.latitude, d.longitude, parameter, window_start, end)
+        except ProviderUnavailable:
+            return None  # no correction without the external series; the outage is noted on the values
         overlap = sorted(set(station) & set(external))
         if len(overlap) < BIAS_MIN_OVERLAP_DAYS:
             continue
@@ -201,14 +215,21 @@ def resolve_series(
     external: dict[date, float] = {}
     ext_provider, ext_ref = providers.weather.name, ""
     static_value: float | None = None
+    ext_down: str | None = None  # a real provider that could not be reached: the values fall back to tier 0
     if ext_class:
-        external = providers.weather.daily(f.centroid_lat, f.centroid_lon, parameter, start, end)
         ext_ref = providers.weather.source_ref(f.centroid_lat, f.centroid_lon)
+        try:
+            external = providers.weather.daily(f.centroid_lat, f.centroid_lon, parameter, start, end)
+        except ProviderUnavailable as e:
+            ext_down = e.message
     elif parameter in SOIL_MAP_PARAMETERS:
-        props = providers.soil.properties(f.centroid_lat, f.centroid_lon)
-        static_value = props.get(SOIL_MAP_PARAMETERS[parameter])
         ext_class, ext_provider = "MODELLED", providers.soil.name
         ext_ref = providers.soil.source_ref(f.centroid_lat, f.centroid_lon)
+        try:
+            props = providers.soil.properties(f.centroid_lat, f.centroid_lon)
+            static_value = props.get(SOIL_MAP_PARAMETERS[parameter])
+        except ProviderUnavailable as e:
+            ext_down = e.message
 
     correction: BiasCorrection | None = None
     correction_checked = False
@@ -270,6 +291,7 @@ def resolve_series(
                 reasons.append("devices had no reading for this day")
             reasons.extend(cand.excluded)
             reasons.append(f"no external source offers {label.lower()}" if not ext_class
+                           else f"external source unavailable: {ext_down.rstrip('.')}" if ext_down
                            else "the external source had no value for this day")
             picked = Resolved(
                 parameter, day, None, unit, 0, "not_available", "", 0.0, None,

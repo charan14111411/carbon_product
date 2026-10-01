@@ -49,8 +49,22 @@ def list_farms(db: Session, user: CurrentUser, farmer_id: str | None = None) -> 
     return list(db.scalars(q).all())
 
 
+def _ensure_unique_external_farm(db: Session, user: CurrentUser, external_farm_id: str | None,
+                                 exclude: uuid.UUID | None = None) -> None:
+    if not external_farm_id:
+        return
+    q = scoped(Farm, user).where(Farm.external_farm_id == external_farm_id)
+    if exclude:
+        q = q.where(Farm.id != exclude)
+    other = db.scalar(q)
+    if other:
+        raise Conflict(f"The Varsapradaya farm {external_farm_id} is already recorded as {other.name}.",
+                       code="DUPLICATE_MEMBER_FARM", details={"farm_id": str(other.id)})
+
+
 def create_farm(db: Session, user: CurrentUser, data: dict[str, Any]) -> Farm:
     farmer = get_owned(db, Farmer, data.pop("farmer_id"), user, "Farmer")
+    _ensure_unique_external_farm(db, user, data.get("external_farm_id"))
     farm = Farm(org_id=user.org_id, created_by=user.id, farmer_id=farmer.id, **data)
     db.add(farm)
     audit(db, user, "farm.create", farm)
@@ -60,8 +74,10 @@ def create_farm(db: Session, user: CurrentUser, data: dict[str, Any]) -> Farm:
 def update_farm(db: Session, user: CurrentUser, farm_id: str, changes: dict[str, Any]) -> Farm:
     farm = get_owned(db, Farm, farm_id, user, "Farm")
     before = snapshot(farm)
+    if changes.get("external_farm_id"):
+        _ensure_unique_external_farm(db, user, changes["external_farm_id"], exclude=farm.id)
     for k, v in changes.items():
-        if v is None and k != "external_farm_id":
+        if v is None and k not in ("external_farm_id", "postal_code"):
             continue
         setattr(farm, k, v)
     audit(db, user, "farm.update", farm, before=before)

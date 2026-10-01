@@ -3,6 +3,7 @@ each may provide ``models.py`` (tables) and ``router.py`` (a FastAPI ``router``)
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import logging
 import pkgutil
@@ -52,7 +53,15 @@ async def lifespan(_: FastAPI):
     load_models()
     if get_settings().auto_create_schema:
         dbmod.Base.metadata.create_all(dbmod.engine())
-    yield
+    # Varsapradaya devices: read every member farm on a timer and keep each reading (off unless
+    # VC_DEVICE_PROVIDER=farmfuture; interval VARSAPRADAYA_POLL_MINUTES).
+    from app.modules.farmfuture import poller
+
+    task = asyncio.create_task(poller.run_forever())
+    try:
+        yield
+    finally:
+        task.cancel()
 
 
 def create_app() -> FastAPI:

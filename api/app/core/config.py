@@ -33,6 +33,26 @@ class Settings(BaseSettings):
 
     engine_version: str = "1.0.0"
 
+    # Varsapradaya member platform (FarmFuture). "simulated" (default) or "farmfuture" (the live API).
+    vc_member_directory: str = "simulated"
+    farmfuture_base_url: str = "https://api.farmfuture.io/api"
+    farmfuture_timeout_s: float = 30.0
+    farmfuture_token_ttl_s: float = 900.0  # tokens are held in memory only, for at most this long
+    farmfuture_verify_tls: bool = True
+    farmfuture_country_code: str = "+91"  # added to numbers typed without a country code
+    # With VC_DEVICE_PROVIDER=farmfuture the API reads every member farm's devices this often (minutes) and keeps
+    # each reading as the device's own history. 0 turns the automatic reading off.
+    varsapradaya_poll_minutes: int = 60
+
+    # Public data services used by the real providers (VC_WEATHER_PROVIDER=nasa_power, VC_SOIL_PROVIDER=soilgrids,
+    # VC_SATELLITE_PROVIDER=planetary_computer, VC_TERRAIN_PROVIDER=copernicus_dem). No keys are needed.
+    nasa_power_url: str = "https://power.larc.nasa.gov/api/temporal/daily/point"
+    soilgrids_url: str = "https://rest.isric.org/soilgrids/v2.0/properties/query"
+    stac_url: str = "https://planetarycomputer.microsoft.com/api/stac/v1"
+    pc_data_api_url: str = "https://planetarycomputer.microsoft.com/api/data/v1"
+    http_timeout_s: float = 60.0
+    http_retries: int = 2  # extra attempts on 429 / 5xx, with exponential backoff
+
     @property
     def is_production(self) -> bool:
         return self.environment == "production"
@@ -50,3 +70,18 @@ def get_settings() -> Settings:
             f"DATABASE_URL is not set. Copy {API_ROOT / '.env.example'} to {API_ROOT / '.env'} and put your "
             "database address in it.")
     return settings
+
+
+def provider_choice(env: str, default: str) -> str:
+    """The provider named by ``env`` (e.g. ``VC_WEATHER_PROVIDER``): the process environment first, then api/.env,
+    then ``default``. Read on every call so a change in api/.env applies at the next request."""
+    import os
+
+    value = os.environ.get(env)
+    if not value:
+        env_file = API_ROOT / ".env"
+        if env_file.is_file():
+            from dotenv import dotenv_values
+
+            value = dotenv_values(env_file).get(env)
+    return (value or default).strip()

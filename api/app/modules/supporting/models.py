@@ -39,6 +39,9 @@ class Device(TenantModel):
     status: Mapped[str] = mapped_column(String(20), default="online")  # online | offline | retired
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     calibrated_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # The last reading pulled from Varsapradaya (latest value only -- the platform keeps no history for us):
+    # {"observed_at", "values": {parameter: value}, "source_values", "missing", "data_class", "note"}.
+    latest_readings: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class Observation(LedgerModel):
@@ -111,3 +114,19 @@ class SoilPropertyApplication(LedgerModel):
     field_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("fields.id"), index=True)
     changes: Mapped[dict] = mapped_column(JSON, default=dict)  # column -> {before, after}
     note: Mapped[str] = mapped_column(Text, default="")
+
+
+class DeviceReading(LedgerModel):
+    """One value a Varsapradaya device actually reported, kept for good. Their API gives only the latest value,
+    so the platform builds the device's own history by keeping every reading it fetches. Daily supporting data
+    uses these first (tier 1/2, MEASURED) and falls back to other sources only for days without a reading."""
+
+    __tablename__ = "device_readings"
+    __table_args__ = (UniqueConstraint("device_id", "parameter", "observed_at"),)
+    device_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("devices.id"), index=True)
+    parameter: Mapped[str] = mapped_column(String(40), index=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))  # UTC
+    observed_on: Mapped[date] = mapped_column(Date, index=True)  # the device's local calendar day
+    value: Mapped[float] = mapped_column(Float)
+    unit: Mapped[str] = mapped_column(String(20), default="")
+    source: Mapped[str] = mapped_column(String(40), default="farmfuture")

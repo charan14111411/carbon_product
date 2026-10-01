@@ -16,20 +16,22 @@ Choosing a provider (environment variables, read on each call):
 * ``VC_WEATHER_PROVIDER``  default ``simulated_nasa_power``
 * ``VC_SOIL_PROVIDER``     default ``simulated_soilgrids``
 
-To plug in a real provider, implement the protocol and register a factory, e.g.
-``register_weather_provider("nasa_power", lambda: NasaPowerClient(api_url=...))``,
-then set ``VC_WEATHER_PROVIDER=nasa_power``.
+Real providers (public APIs, no key): ``VC_WEATHER_PROVIDER=nasa_power`` (``nasa_power.py``) and
+``VC_SOIL_PROVIDER=soilgrids`` (``soilgrids.py``). The variables are read from the process environment or
+api/.env. A failing real provider raises ``ProviderUnavailable``; the resolver records the value as not available.
+To plug in another, implement the protocol and register a factory with ``register_weather_provider`` etc.
 """
 
 from __future__ import annotations
 
 import hashlib
 import math
-import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Protocol
+
+from app.core.config import provider_choice
 
 # ---------------------------------------------------------------- deterministic randomness
 
@@ -285,8 +287,22 @@ class SimulatedSoilGrids:
 # ---------------------------------------------------------------- registry
 
 _DEVICE: dict[str, Callable[[], DeviceProvider]] = {"simulated": SimulatedDeviceProvider}
-_WEATHER: dict[str, Callable[[], ExternalWeatherProvider]] = {"simulated_nasa_power": SimulatedNasaPower}
-_SOIL: dict[str, Callable[[], SoilGridsProvider]] = {"simulated_soilgrids": SimulatedSoilGrids}
+def _nasa_power() -> ExternalWeatherProvider:
+    from app.modules.supporting.nasa_power import NasaPower  # real NASA POWER daily point API
+
+    return NasaPower()
+
+
+def _soilgrids() -> SoilGridsProvider:
+    from app.modules.supporting.soilgrids import SoilGrids  # real ISRIC SoilGrids v2.0 REST API
+
+    return SoilGrids()
+
+
+_WEATHER: dict[str, Callable[[], ExternalWeatherProvider]] = {
+    "simulated_nasa_power": SimulatedNasaPower, "nasa_power": _nasa_power,
+}
+_SOIL: dict[str, Callable[[], SoilGridsProvider]] = {"simulated_soilgrids": SimulatedSoilGrids, "soilgrids": _soilgrids}
 
 
 def register_device_provider(name: str, factory: Callable[[], DeviceProvider]) -> None:
@@ -302,7 +318,7 @@ def register_soil_provider(name: str, factory: Callable[[], SoilGridsProvider]) 
 
 
 def _pick(registry: dict, env: str, default: str):
-    name = os.environ.get(env, default)
+    name = provider_choice(env, default)  # process environment, then api/.env, then the default
     if name not in registry:
         raise RuntimeError(f"Unknown provider '{name}' in {env}. Registered: {sorted(registry)}")
     return registry[name]()

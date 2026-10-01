@@ -62,3 +62,17 @@ class Blocked(AppError):
 
 class IllegalTransition(AppError):
     status, code = 409, "ILLEGAL_STATE_TRANSITION"
+
+
+class ProviderUnavailable(AppError):
+    """An outside data service (weather, soil map, satellite, DEM) could not be reached or gave no usable answer.
+    Supporting-data sync catches it and records the value as not available; other screens show the message."""
+
+    status, code = 503, "PROVIDER_UNAVAILABLE"
+
+    def __init__(self, provider: str, reason: str, *, details: dict[str, Any] | None = None, no_data: bool = False):
+        message = (f"{provider} has no value for this location: {reason}." if no_data else
+                   f"The {provider} service is unavailable right now ({reason}). Try again later.")
+        super().__init__(message, details={"provider": provider, "reason": reason, **(details or {})})
+        self.provider = provider
+        self.reason = reason

@@ -33,6 +33,8 @@ class FarmIn(BaseModel):
     district: str = Field(default="", max_length=120)
     state: str = Field(default="", max_length=120)
     external_farm_id: str | None = Field(default=None, max_length=80)
+    postal_code: str | None = Field(default=None, max_length=20)
+    notes: str = Field(default="", max_length=4000)
 
 
 class FarmPatch(BaseModel):
@@ -41,6 +43,8 @@ class FarmPatch(BaseModel):
     district: str | None = Field(default=None, max_length=120)
     state: str | None = Field(default=None, max_length=120)
     external_farm_id: str | None = Field(default=None, max_length=80)
+    postal_code: str | None = Field(default=None, max_length=20)
+    notes: str | None = Field(default=None, max_length=4000)
 
 
 class FarmOut(OrmOut):
@@ -51,6 +55,8 @@ class FarmOut(OrmOut):
     district: str
     state: str
     external_farm_id: str | None
+    postal_code: str | None = None
+    notes: str = ""
     created_at: datetime
     updated_at: datetime
 

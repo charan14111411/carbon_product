@@ -72,7 +72,8 @@ def refresh_satellite(db: Session, user: CurrentUser, fld: Field, start: date, e
     if end > today():
         raise ValidationFailed("Satellite data can't be requested for future dates.", code="FUTURE_WINDOW")
     provider = get_satellite_provider()
-    obs = provider.indices(FieldRef(str(fld.id), fld.centroid_lat, fld.centroid_lon, fld.crop_code), start, end)
+    obs = provider.indices(FieldRef(str(fld.id), fld.centroid_lat, fld.centroid_lon, fld.crop_code, fld.boundary),
+                           start, end)
     if not any(o.index_name == "lai" for o in obs):  # LAI is DERIVED from each pass's NDVI
         obs = obs + [SatObs("lai", o.observed_on, lai_from_ndvi(o.value), o.cloud_pct, o.source)
                      for o in obs if o.index_name == "ndvi"]

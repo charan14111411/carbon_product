@@ -12,7 +12,7 @@ from app.core.auth import CurrentUser
 from app.core.errors import Conflict, ValidationFailed
 from app.core.tenancy import audit, get_owned, scoped, snapshot
 from app.modules.farmers.domain import normalise_phone, phone_digits
-from app.modules.farmers.member_directory import MemberDirectory
+from app.modules.farmers.member_directory import MemberDirectoryProtocol, MemberRecord
 from app.modules.farmers.models import FPO, Farmer
 
 CODE_PREFIX = "FRM-"
@@ -118,8 +118,13 @@ def search_farmers(
 
 
 # ------------------------------------------------------------------ member lookup
-def member_lookup(db: Session, user: CurrentUser, directory: MemberDirectory, phone: str,
+def member_lookup(db: Session, user: CurrentUser, directory: MemberDirectoryProtocol, phone: str,
                   farmer_id: str | None = None) -> dict[str, Any]:
+    """Ask the member platform about a number; optionally link the answer to a farmer.
+
+    If the platform can't be reached, ``MemberDirectoryUnavailable`` (503) propagates and nothing is
+    written: an unanswered question is never stored as "not a member".
+    """
     e164 = normalise_phone(phone)
     record = directory.lookup(e164)
     existing = db.scalar(scoped(Farmer, user).where(Farmer.phone == e164))
@@ -140,12 +145,95 @@ def member_lookup(db: Session, user: CurrentUser, directory: MemberDirectory, ph
             before = snapshot(linked)
             linked.member_id = record.member_id
             audit(db, user, "farmer.link_member", linked, before=before)
+    out = record.to_dict()
+    imported = _imported_farms(db, user, [f.external_farm_id for f in record.farms])
+    for farm in out["farms"]:
+        hit = imported.get(farm["external_farm_id"])
+        farm["imported_farm_id"] = str(hit.id) if hit else None
     return {
-        **record.to_dict(),
+        **out,
         "phone": e164,
         "existing_farmer_id": str(existing.id) if existing else None,
         "linked_farmer_id": str(linked.id) if linked else None,
     }
+
+
+def _imported_farms(db: Session, user: CurrentUser, external_ids: list[str]) -> dict[str, Any]:
+    from app.modules.land.models import Farm
+
+    ids = [x for x in external_ids if x]
+    if not ids:
+        return {}
+    rows = db.scalars(scoped(Farm, user).where(Farm.external_farm_id.in_(ids))).all()
+    return {f.external_farm_id: f for f in rows}
+
+
+# ------------------------------------------------------------------ member farm import
+NO_FIELDS_NOTE = ("Varsapradaya holds no boundary, area or coordinates for a farm, so no fields were created. "
+                  "Map each field's boundary under Fields & map before it can be enrolled.")
+
+
+def _farm_notes(farm: Any) -> str:
+    parts = ["Imported from Varsapradaya."]
+    if farm.estate_name:
+        parts.append(f"Estate: {farm.estate_name}.")
+    if farm.crops:
+        parts.append("Crops on Varsapradaya: " + ", ".join(farm.crops) + ".")
+    if farm.plants_per_hectare:
+        parts.append(f"Plants per hectare (as reported): {farm.plants_per_hectare:g}.")
+    return " ".join(parts)
+
+
+def import_member_farms(db: Session, user: CurrentUser, directory: MemberDirectoryProtocol, farmer_id: str,
+                        external_farm_ids: list[str]) -> dict[str, Any]:
+    """Create our Farm records from the farmer's Varsapradaya farms. Idempotent per org + external id.
+
+    The farm list is fetched again on the server: what the browser sends is only a choice of IDs, never
+    the farm data itself.
+    """
+    from app.modules.land.models import Farm
+
+    farmer = get_owned(db, Farmer, farmer_id, user, "Farmer")
+    if not farmer.member_id:
+        raise ValidationFailed("Link this farmer to their Varsapradaya membership first (Check membership).",
+                               code="NOT_LINKED_MEMBER")
+    wanted = list(dict.fromkeys(x.strip() for x in external_farm_ids if x and x.strip()))
+    if not wanted:
+        raise ValidationFailed("Choose at least one farm to import.", code="NOTHING_TO_IMPORT")
+    record: MemberRecord = directory.lookup(farmer.phone)
+    if not record.is_member:
+        raise ValidationFailed("This farmer's phone number is no longer registered on Varsapradaya.",
+                               code="NOT_A_MEMBER")
+    if record.member_id != farmer.member_id:
+        raise Conflict("Varsapradaya now reports a different membership for this phone number. Check membership "
+                       "again before importing.", code="MEMBER_MISMATCH",
+                       details={"linked": farmer.member_id, "reported": record.member_id})
+    by_id = {f.external_farm_id: f for f in record.farms}
+    unknown = [x for x in wanted if x not in by_id]
+    if unknown:
+        raise ValidationFailed("Some of these farms aren't on this farmer's Varsapradaya account.",
+                               code="UNKNOWN_MEMBER_FARM", details={"unknown": unknown})
+    existing = _imported_farms(db, user, wanted)
+    created, skipped = [], []
+    for ext in wanted:
+        hit = existing.get(ext)
+        if hit is not None:
+            skipped.append({
+                "external_farm_id": ext, "farm_id": str(hit.id), "farmer_id": str(hit.farmer_id),
+                "reason": "Already imported." if hit.farmer_id == farmer.id
+                else "Already imported for another farmer in your organisation.",
+            })
+            continue
+        src = by_id[ext]
+        farm = Farm(org_id=user.org_id, created_by=user.id, farmer_id=farmer.id, name=src.name[:200],
+                    village="", district="", state="", external_farm_id=ext,
+                    postal_code=src.postal_code[:20] if src.postal_code else None, notes=_farm_notes(src))
+        db.add(farm)
+        audit(db, user, "farm.import_member", farm, reason=f"Imported from Varsapradaya ({record.source})")
+        created.append({"id": str(farm.id), "name": farm.name, "external_farm_id": ext,
+                        "postal_code": farm.postal_code, "notes": farm.notes})
+    return {"farmer_id": str(farmer.id), "member_id": farmer.member_id, "created": created, "skipped": skipped,
+            "fields_created": 0, "note": NO_FIELDS_NOTE}
 
 
 # ------------------------------------------------------------------ farmer 360
@@ -189,6 +277,7 @@ def overview(db: Session, user: CurrentUser, farmer_id: str) -> dict[str, Any]:
         "fpo": fpo,
         "farms": [
             {"id": str(f.id), "name": f.name, "village": f.village, "external_farm_id": f.external_farm_id,
+             "postal_code": f.postal_code,
              "fields": [{"id": str(fl.id), "code": fl.code, "name": fl.name, "area_ha": fl.area_ha,
                          "crop_code": fl.crop_code, "status": fl.status} for fl in by_farm.get(f.id, [])]}
             for f in farms

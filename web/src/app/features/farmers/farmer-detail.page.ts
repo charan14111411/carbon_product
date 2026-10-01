@@ -8,15 +8,16 @@ import { DayPipe, NumPipe } from '../../core/format';
 import { ToastService } from '../../core/toast.service';
 import { Icon } from '../../ui/icon';
 import { Badge, Callout, DataClass, Empty, ErrorBox, Hash, Loading, Modal, TabItem, Tabs, Timeline, TimelineItem } from '../../ui/kit';
-import { MemberResult } from './member-result';
+import { DeviceTierChip, MemberResult, MemberUnavailable } from './member-result';
 import {
-  Agreement, AgreementTemplate, CHANNELS, Consents, FarmerOverview, formatPhone, initials, LANGUAGES, MemberLookup, PURPOSES,
+  Agreement, AgreementTemplate, CHANNELS, Consents, DeviceRefresh, FarmerOverview, formatPhone, initials, LANGUAGES, MEMBER_UNAVAILABLE,
+  MemberFarmImport, MemberLookup, PURPOSES,
 } from './types';
 
 @Component({
   selector: 'vc-farmer-detail',
   imports: [FormsModule, RouterLink, Loading, ErrorBox, Empty, Badge, Modal, Tabs, Icon, Timeline, Hash, Callout, DataClass,
-    MemberResult, NumPipe, DayPipe],
+    MemberResult, MemberUnavailable, DeviceTierChip, NumPipe, DayPipe],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <a class="back" routerLink="/app/farmers"><vc-icon name="arrow-left" [size]="15" />All farmers</a>
@@ -48,10 +49,17 @@ import {
             <vc-badge [status]="kycTone(f.kyc_status)">{{ kycLabel(f.kyc_status) }}</vc-badge>
             @if (canManage && !f.member_id) {
               <button class="btn btn-secondary btn-sm" (click)="checkMember()" [disabled]="looking()"><vc-icon name="verified" [size]="14" />{{ looking() ? 'Checking…' : 'Check membership' }}</button>
+            } @else if (canManage && f.member_id) {
+              <button class="btn btn-secondary btn-sm" (click)="checkMember()" [disabled]="looking()"><vc-icon name="download" [size]="14" />{{ looking() ? 'Checking…' : 'Varsapradaya farms' }}</button>
             }
           </div>
         </div>
-        @if (lookup(); as r) { <div class="lk"><vc-member-result [result]="r" [currentId]="f.id" /></div> }
+        @if (unavailable() !== null) {
+          <div class="lk"><vc-member-unavailable [message]="unavailable()!" [busy]="looking()" (retry)="checkMember()" /></div>
+        } @else if (lookup(); as r) {
+          <div class="lk"><vc-member-result [result]="r" [currentId]="f.id" [importing]="importing()" (importFarms)="importFarms($event)"
+            [importable]="canManage && !!f.member_id && r.is_member && r.member_id === f.member_id" /></div>
+        }
         <div class="facts">
           <div><span class="v num">{{ o.total_area_ha | num: 2 }}<small>ha</small></span><span class="l">Total field area <vc-dc cls="CALCULATED" /></span></div>
           <div><span class="v num">{{ fieldCount() }}</span><span class="l">Fields on {{ o.farms.length }} farm{{ o.farms.length === 1 ? '' : 's' }}</span></div>
@@ -74,9 +82,41 @@ import {
                 <section class="card">
                   <div class="card-head">
                     <vc-icon name="tractor" [size]="16" class="subtle" />
-                    <h3>{{ farm.name }} <span class="subtle small">{{ farm.village }}</span></h3>
+                    <h3>{{ farm.name }} <span class="subtle small">{{ farm.village }}@if (farm.postal_code) { · PIN {{ farm.postal_code }} }</span></h3>
                     @if (farm.external_farm_id) { <span class="small subtle">Member farm <code>{{ farm.external_farm_id }}</code></span> }
+                    @if (farm.external_farm_id && canSync) {
+                      <span class="spacer"></span>
+                      <button class="btn btn-ghost btn-sm" (click)="refreshDevices(farm.id)" [disabled]="devState()[farm.id]?.busy">
+                        <vc-icon name="refresh" [size]="14" />{{ devState()[farm.id]?.busy ? 'Refreshing…' : 'Refresh devices from Varsapradaya' }}</button>
+                    }
                   </div>
+                  @if (devState()[farm.id]; as d) {
+                    @if (d.unavailable !== undefined) {
+                      <div class="card-body"><vc-member-unavailable [message]="d.unavailable" [busy]="!!d.busy" (retry)="refreshDevices(farm.id)" /></div>
+                    } @else if (d.result; as res) {
+                      <div class="card-body devs">
+                        <div class="row wrap" style="--gap:8px">
+                          <vc-device-tier [tier]="res.tier" />
+                          <span class="small">{{ res.devices.length ? res.registered + ' registered, ' + res.updated + ' updated' : 'No devices reported for this farm' }}</span>
+                          <a class="small" routerLink="/app/supporting">Open supporting data</a>
+                        </div>
+                        @for (dv of res.devices; track dv.id) {
+                          <div class="dv">
+                            <vc-icon [name]="dv.kind === 'soilsync' ? 'droplets' : 'rain'" [size]="14" />
+                            <strong>{{ dv.name }}</strong><span class="mono small subtle">{{ dv.external_id }}</span>
+                            <vc-badge [status]="dv.status" />
+                            <span class="small subtle">{{ dv.last_seen_at ? 'Last reading ' + (dv.last_seen_at | day: true) : 'No reading time' }}</span>
+                            <span class="vals">
+                              @for (x of dv.readings; track x.parameter) { <span class="val">{{ x.label }} <b class="num">{{ x.value }}</b> {{ x.unit }}</span> }
+                              @if (dv.readings.length) { <vc-dc cls="MEASURED" /> }
+                            </span>
+                          </div>
+                        }
+                        <p class="small muted">@if (res.readings_kept) { <strong>{{ res.readings_kept }} new reading{{ res.readings_kept === 1 ? '' : 's' }} kept.</strong> } {{ res.history_note }}</p>
+                        @for (n of res.notes; track n) { <p class="small subtle">· {{ n }}</p> }
+                      </div>
+                    }
+                  }
                   @if (!farm.fields.length) {
                     <div class="card-body muted small">No fields mapped on this farm yet.</div>
                   } @else {
@@ -298,6 +338,11 @@ import {
     .member{display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 10px;border-radius:999px;background:var(--forest-600);color:#fff;font-size:12px;font-weight:500}
     .acts{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
     .lk{padding:0 22px 16px}
+    .spacer{flex:1}
+    .devs{display:flex;flex-direction:column;gap:8px;border-bottom:1px solid var(--border)}
+    .dv{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px}
+    .vals{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center;flex:1;justify-content:flex-end}
+    .val{font-size:12px;color:var(--text-2)} .val b{color:var(--stone-900);font-weight:600}
     .facts{display:grid;grid-template-columns:repeat(5,1fr);border-top:1px solid var(--border);background:var(--surface-2)}
     .facts > div{display:flex;flex-direction:column;gap:3px;padding:14px 22px}
     .facts > div + div{border-left:1px solid var(--border)}
@@ -332,7 +377,9 @@ export class FarmerDetailPage {
   id = input.required<string>();
   private api = inject(ApiService);
   private toast = inject(ToastService);
-  canManage = inject(AuthService).can('farmers.manage');
+  private auth = inject(AuthService);
+  canManage = this.auth.can('farmers.manage');
+  canSync = this.auth.can('data.sync');
   dev = isDevMode();
   ini = initials;
   phone = formatPhone;
@@ -354,6 +401,9 @@ export class FarmerDetailPage {
   crops = signal<{ code: string; name: string }[]>([]);
   looking = signal(false);
   lookup = signal<MemberLookup | null>(null);
+  unavailable = signal<string | null>(null);
+  importing = signal(false);
+  devState = signal<Record<string, { busy?: boolean; result?: DeviceRefresh; unavailable?: string }>>({});
   busy = signal(false);
 
   fieldCount = computed(() => this.ov()?.farms.reduce((a, f) => a + f.fields.length, 0) ?? 0);
@@ -413,13 +463,19 @@ export class FarmerDetailPage {
     this.api.get<Agreement[]>(`/farmers/${this.id()}/agreements`).pipe(catchError(() => of([]))).subscribe(a => this.agreements.set(a));
   }
 
+  private memberError(e: ApiError, title: string) {
+    if (e.code === MEMBER_UNAVAILABLE) { this.lookup.set(null); this.unavailable.set(e.message); }
+    else this.toast.apiError(e, title);
+  }
+
   checkMember() {
     const f = this.ov()?.farmer;
     if (!f) return;
     this.looking.set(true);
     this.api.post<MemberLookup>('/farmers/member-lookup', { phone: f.phone }).subscribe({
       next: r => {
-        if (!r.is_member) { this.looking.set(false); this.lookup.set(r); return; }
+        this.unavailable.set(null);
+        if (!r.is_member || f.member_id) { this.looking.set(false); this.lookup.set(r); return; }
         this.api.post<MemberLookup>('/farmers/member-lookup', { phone: f.phone, farmer_id: f.id }).subscribe({
           next: linked => {
             this.looking.set(false);
@@ -427,10 +483,42 @@ export class FarmerDetailPage {
             this.toast.success('Membership linked', `${f.full_name} is Varsapradaya member ${linked.member_id}.`);
             this.load();
           },
-          error: (e: ApiError) => { this.looking.set(false); this.lookup.set(r); this.toast.apiError(e, "Couldn't link membership"); },
+          error: (e: ApiError) => { this.looking.set(false); this.lookup.set(r); this.memberError(e, "Couldn't link membership"); },
         });
       },
-      error: (e: ApiError) => { this.looking.set(false); this.toast.apiError(e, "Couldn't check membership"); },
+      error: (e: ApiError) => { this.looking.set(false); this.memberError(e, "Couldn't check membership"); },
+    });
+  }
+
+  importFarms(ids: string[]) {
+    this.importing.set(true);
+    this.api.post<MemberFarmImport>(`/farmers/${this.id()}/import-member-farms`, { external_farm_ids: ids }).subscribe({
+      next: res => {
+        this.importing.set(false);
+        const done = new Map<string, string>([...res.created.map(c => [c.external_farm_id, c.id] as [string, string]),
+          ...res.skipped.map(s => [s.external_farm_id, s.farm_id] as [string, string])]);
+        const r = this.lookup();
+        if (r) this.lookup.set({ ...r, farms: r.farms.map(x => done.has(x.external_farm_id) ? { ...x, imported_farm_id: done.get(x.external_farm_id)! } : x) });
+        const n = res.created.length;
+        this.toast.success(n ? `${n} farm${n === 1 ? '' : 's'} imported` : 'Already imported',
+          `${res.skipped.length ? res.skipped.length + ' skipped (already imported). ' : ''}${res.note}`);
+        this.load();
+      },
+      error: (e: ApiError) => { this.importing.set(false); this.memberError(e, "Couldn't import farms"); },
+    });
+  }
+
+  refreshDevices(farmId: string) {
+    this.devState.update(m => ({ ...m, [farmId]: { ...m[farmId], busy: true } }));
+    this.api.post<DeviceRefresh>(`/farms/${farmId}/devices/refresh`, {}).subscribe({
+      next: res => {
+        this.devState.update(m => ({ ...m, [farmId]: { result: res } }));
+        this.toast.success('Devices refreshed', `${res.registered} registered, ${res.updated} updated · latest values only.`);
+      },
+      error: (e: ApiError) => {
+        if (e.code === MEMBER_UNAVAILABLE) this.devState.update(m => ({ ...m, [farmId]: { unavailable: e.message } }));
+        else { this.devState.update(m => ({ ...m, [farmId]: {} })); this.toast.apiError(e, "Couldn't refresh devices"); }
+      },
     });
   }
 

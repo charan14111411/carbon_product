@@ -3,7 +3,9 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import JSON, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, Uuid
+from sqlalchemy import (
+    JSON, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, Uuid, text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import LedgerModel, TenantModel
@@ -11,12 +13,19 @@ from app.core.db import LedgerModel, TenantModel
 
 class Farm(TenantModel):
     __tablename__ = "farms"
+    # One farm record per Varsapradaya farm in an organisation (filtered: farms without one are unlimited).
+    __table_args__ = (
+        Index("uq_farms_org_external_farm_id", "org_id", "external_farm_id", unique=True,
+              mssql_where=text("external_farm_id IS NOT NULL"), sqlite_where=text("external_farm_id IS NOT NULL")),
+    )
     farmer_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("farmers.id"), index=True)
     name: Mapped[str] = mapped_column(String(200))
     village: Mapped[str] = mapped_column(String(120), default="")
     district: Mapped[str] = mapped_column(String(120), default="")
     state: Mapped[str] = mapped_column(String(120), default="")
     external_farm_id: Mapped[str | None] = mapped_column(String(80), nullable=True)  # Varsapradaya farm id
+    postal_code: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    notes: Mapped[str] = mapped_column(Text, default="")
 
 
 class Field(TenantModel):
